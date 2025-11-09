@@ -6,6 +6,7 @@ function el(html) {
   d.innerHTML = html.trim();
   return d.firstElementChild;
 }
+
 function sanitizeRoom(s) {
   return String(s || "")
     .trim()
@@ -13,11 +14,36 @@ function sanitizeRoom(s) {
     .replace(/\s+/g, "-")
     .replace(/[^a-z0-9_-]/g, "") || "sala1";
 }
+
+/** URL WSS por defecto: tu gateway en Render (sin puerto ni /ws) */
 function defaultServer() {
-  // Usa SIEMPRE tu gateway seguro en Render (WSS):
-  // (copia EXACTAMENTE tu URL que Render mostró al quedar "Live")
   return "wss://wilmerchdamas10x10-ws.onrender.com";
 }
+
+/** Normaliza lo que el usuario ponga, para que SIEMPRE sea WSS correcto */
+function normalizeWS(url) {
+  let s = (url || "").trim();
+  if (!s) return defaultServer();
+
+  // Forzar esquema seguro
+  s = s.replace(/^http(s?):\/\//i, "wss://");
+  s = s.replace(/^ws:\/\//i, "wss://");
+
+  // Quitar puerto local 3001 si aparece
+  s = s.replace(/:3001\b/i, "");
+
+  // Quitar sufijo /ws (el gateway acepta raíz y /ws, pero preferimos raíz)
+  s = s.replace(/\/ws\b/i, "");
+
+  // Asegurar que quedó con esquema
+  if (!/^wss:\/\//i.test(s)) s = "wss://" + s;
+
+  // Quitar trailing slash redundante
+  s = s.replace(/\/+$/g, "");
+
+  return s || defaultServer();
+}
+
 function parseQuery() {
   const q = new URLSearchParams(location.search);
   // Acepta ?server= o ?ws= (prioriza server)
@@ -27,7 +53,6 @@ function parseQuery() {
     server: qServer,
   };
 }
-
 
 function getBoardHost() {
   return document.getElementById("board");
@@ -64,7 +89,6 @@ function paneTemplate({ room, server, disabled }) {
     </label>
     <button id="wan-connect" style="padding:.35rem .7rem" ${dis}>Conectar</button>
     <button id="wan-disconnect" style="padding:.35rem .7rem" ${dis}>Desconectar</button>
-    
   </div>
 </div>`;
 }
@@ -84,7 +108,7 @@ export function installEditorWANPanel(container, opts = {}) {
 
   const q = parseQuery();
   const initialRoom = q.room;
-  const initialServer = q.server || defaultServer();
+  const initialServer = normalizeWS(q.server || defaultServer());
 
   const pane = el(paneTemplate({ room: initialRoom, server: initialServer, disabled: !hasBridge }));
   const group = container.querySelector("#group-save-load-local");
@@ -102,7 +126,6 @@ export function installEditorWANPanel(container, opts = {}) {
   const $server = pane.querySelector("#wan-server");
   const $btnConnect    = pane.querySelector("#wan-connect");
   const $btnDisconnect = pane.querySelector("#wan-disconnect");
-  
 
   if (!hasBridge) {
     pane.setAttribute("aria-disabled", "true");
@@ -128,12 +151,13 @@ export function installEditorWANPanel(container, opts = {}) {
     console.log("[WAN]", msg);
   }
 
-  async function connectIfNeeded(room, server) {
+  async function connectIfNeeded(room, wsUrl) {
     try {
       if (wsBridge.isOpen?.()) return true;
       setStatus("wait");
       $hint.textContent = "Conectando…";
-      await wsBridge.connect?.({ room, wsUrl: server });
+      // IMPORTANTE: pasar objeto con { room, wsUrl } y wsUrl ya normalizado
+      await wsBridge.connect?.({ room, wsUrl });
       setStatus("on");
       $hint.textContent = "Conectado";
       return true;
@@ -145,22 +169,11 @@ export function installEditorWANPanel(container, opts = {}) {
     }
   }
 
-$btnConnect.addEventListener("click", async () => {
-  const room = sanitizeRoom($room.value);
-  let server = ($server.value || "").trim() || defaultServer();
-
-  // Forzar WSS y quitar puertos/rutas locales si alguien pegó algo raro
-  if (!/^wss:\/\//i.test(server)) {
-    // si vino como ws:// o sin esquema, lo pasamos a wss://
-    server = server.replace(/^ws:\/\//i, "wss://");
-    if (!/^wss:\/\//i.test(server)) server = "wss://" + server;
-  }
-  // Evita :3001 y /ws heredados de local
-  server = server.replace(/:3001\/?$/i, "").replace(/\/ws\/?$/i, "");
-
-  await connectIfNeeded(room, server);
-});
-
+  $btnConnect.addEventListener("click", async () => {
+    const room = sanitizeRoom($room.value);
+    const server = normalizeWS($server.value || defaultServer());
+    await connectIfNeeded(room, server);
+  });
 
   $btnDisconnect.addEventListener("click", async () => {
     try { await wsBridge.disconnect?.(); } catch {}
@@ -170,7 +183,7 @@ $btnConnect.addEventListener("click", async () => {
 
   const onCopyFEN = async () => {
     const room = sanitizeRoom($room.value);
-    const server = ($server.value || "").trim() || defaultServer();
+    const server = normalizeWS($server.value || defaultServer());
 
     const okConn = await connectIfNeeded(room, server);
     if (!okConn) {
@@ -191,5 +204,9 @@ $btnConnect.addEventListener("click", async () => {
   };
 
   window.addEventListener("editor:share", onCopyFEN);
+
+  // Deja precargado el server normalizado en el input por si vino query raro
+  try { $server.value = initialServer; } catch {}
+
   return pane;
 }
