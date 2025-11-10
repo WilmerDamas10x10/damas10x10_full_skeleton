@@ -191,7 +191,8 @@ function wrapSfxForWAN(sfxObj, ws){
       if (__applyingRemoteFx) return;
       // 3) si no hay WS o no está OPEN -> salir
       try {
-        if (!ws?.isConnected?.()) return;
+        const connected = (typeof ws?.isConnected === "function" ? ws.isConnected() : !!ws?.isOpen?.());
+        if (!connected) return;
         ws.safeSend?.({ v:1, t:"uifx", op:"sfx", payload:{ name:n } });
       } catch {}
     };
@@ -242,7 +243,8 @@ async function copyFenToClipboard({ board, turn }) {
     }
     // Fallback: execCommand dentro del gesto de usuario
     const ta=document.createElement("textarea");
-    ta.value=fen; ta.setAttribute("readonly",""); ta.style.position="fixed"; ta.style.left="-9999px";
+    ta.value=fen; ta.setAttribute("readonly","");
+    ta.style.position="fixed"; ta.style.left="-9999px";
     document.body.appendChild(ta); ta.select();
     const ok=document.execCommand("copy");
     ta.remove();
@@ -424,12 +426,19 @@ export default function TrainingEditor(container) {
   const syncVerifyLabel = () => { try { if (verifyBtn) verifyBtn.textContent = "Ver capturas"; } catch {} };
   syncVerifyLabel();
 
-  const repaintOverlays = (() => { let rafId = 0; return () => { const layer = document.querySelector("#board .ov2-layer"); if (!layer) return; if (rafId) cancelAnimationFrame(rafId); rafId = requestAnimationFrame(() => { rafId = 0; }); }; })();
+  const repaintOverlays = (() => { let rafId = 0; return () => {
+    const layer = document.querySelector("#board .ov2-layer"); if (!layer) return;
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(() => { rafId = 0; });
+  }; })();
 
   try {
     if (boardEl.__ov2RO) { try { boardEl.__ov2RO.disconnect(); } catch {} }
     let rafId = 0;
-    const ro = new ResizeObserver(() => { if (rafId) cancelAnimationFrame(rafId); rafId = requestAnimationFrame(() => { rafId = 0; repaintOverlays(); }); });
+    const ro = new ResizeObserver(() => {
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => { rafId = 0; repaintOverlays(); });
+    });
     ro.observe(boardEl); boardEl.__ov2RO = ro;
   } catch {}
 
@@ -470,10 +479,10 @@ export default function TrainingEditor(container) {
     deps: { movimientos },
     hints: HINTS_FOR_CONTROLLER,
   });
-  const switchTurnUI = () => { 
-    try { clearSelectedGlowRemote(boardEl); } catch {} 
-    switchTurn(); 
-    setTurnTextUI(); 
+  const switchTurnUI = () => {
+    try { clearSelectedGlowRemote(boardEl); } catch {}
+    switchTurn();
+    setTurnTextUI();
   };
 
   function setPlacing(mode) {
@@ -641,9 +650,11 @@ export default function TrainingEditor(container) {
   // 🆕 Definir el emisor real de estado (usa la sala y clientId del bridge)
   doPushStateNow = () => {
     try {
-      if (applyingRemote) return;                 // anti-eco
-      if (!_ws?.isConnected?.()) return;          // requiere socket abierto
+      if (applyingRemote) return; // anti-eco
+      const connected = (typeof _ws?.isConnected === "function" ? _ws.isConnected() : !!_ws?.isOpen?.());
+      if (!connected) return; // requiere socket abierto
       const snap = { board: boardRef.current, turn };
+      // Enviar snapshot inmediato (Editor → gateway → pares)
       _ws.safeSend?.({ v: 1, t: "state", payload: snap });
     } catch {}
   };
@@ -669,7 +680,7 @@ export default function TrainingEditor(container) {
   // Panel WAN (debajo de los botones de edición)
   installEditorWANPanel(container, { getBridge: () => _ws });
 
-  // Aplicar FEN recibido (t:"fen") — manejado por el bridge con api.applyFEN si lo implementas
+  // Aplicar FEN recibido (t:"fen") — manejado por el listener de eventos
   window.addEventListener("wan:fen", async (e) => {
     const fenStr = e?.detail?.fen;
     if (!fenStr) return;
