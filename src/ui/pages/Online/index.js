@@ -16,6 +16,7 @@ import {
   movimientos as baseMovimientos,
   aplicarMovimiento as baseAplicarMovimiento,
 } from "@engine"; // ← motor único
+
 import { onMove, onCaptureHop, onCrown } from "../../sfx.hooks.js";
 import { initEditorSFX } from "../Training/editor/sfx.bootstrap.js";
 import { ensureGlobalFX } from "../../kit/globalFX.js";
@@ -25,17 +26,23 @@ import { installGoldenHook } from "../Training/editor/dev/goldenHook.js";
 import "../../../styles/board.css";
 import "../../../styles/board/cells.css";
 
+// 🎨 Estilos locales del modo Online
+import "./online.styles.css";
+
 // Secuencias y replay
 import { setupSeqReplay } from "./lib/seqReplay.js";
+
 // Banner espectador
 import "./lib/spectatorBanner.css";
+
 // Overlay para desbloquear audio
 import { createSFXUnlockOverlay } from "./lib/sfxUnlock.js";
 import "./lib/sfxUnlock.css";
 
-// Toolbar: carga diferida
 let ATTACH_TOOLBAR_PROMISE = null;
+const EDITOR_TOOLBAR_ENABLED = false;
 
+// Helpers
 import {
   clone, last, routeHasCapture,
   crownIfNeeded, scrubNonPlayableSquares,
@@ -44,6 +51,8 @@ import {
 
 import { createTransport, PROTO_V } from "./lib/transport.js";
 import { createSyncMonitor } from "./lib/sync.js";
+import { getOnlineLayoutHTML } from "./ui.layout.js";
+import { setupOnlineButtons } from "./ui.buttons.js";
 
 // --- Utils locales ---
 const sanitizeRoom = (s) =>
@@ -76,9 +85,45 @@ export default function mountOnline(container){
     onUnlocked: () => { try { initEditorSFX(); } catch {} }
   });
 
+  // ==== Flags de entorno (GOLDEN/DEBUG) ====
+  const DEV_QUERY = (/[?&]dev=1\b/i).test(location.search);
+  const GOLDEN_ENABLED = DEV_QUERY || (/[?&]golden=1\b/i).test(location.search) || localStorage.getItem("D10_GOLDEN") === "1";
+  const DEBUG_ENABLED  = DEV_QUERY || (/[?&]debug=1\b/i).test(location.search)  || localStorage.getItem("D10_DEBUG")  === "1";
+
+  // Panel DEBUG gateado
+  const DEBUG_PANEL_HTML = DEBUG_ENABLED ? `
+      <details class="card" style="padding:10px 12px; margin-top:8px;">
+        <summary class="btn btn--subtle" style="cursor:pointer;">DEBUG · Cargar tablero</summary>
+        <div class="row" style="gap:12px; margin-top:8px; align-items:flex-start; flex-wrap:wrap;">
+          <textarea id="dbg-board-text" rows="10" cols="34" style="font-family:monospace; line-height:1.25; resize:vertical;"></textarea>
+          <div class="col" style="gap:8px; min-width:220px;">
+            <label class="btn btn--subtle">Turno:
+              <select id="dbg-turn" class="btn" style="margin-left:6px;">
+                <option value="R">R</option>
+                <option value="N">N</option>
+              </select>
+            </label>
+
+            <label class="btn btn--subtle" title="Si se pega un tablero mal alineado, limpia piezas en casillas claras">
+              <input type="checkbox" id="dbg-force-parity" style="margin-right:6px;">
+              Forzar casillas válidas (oscuras)
+            </label>
+
+            <div class="row" style="gap:8px; flex-wrap:wrap;">
+              <button class="btn" id="dbg-apply-local" title="Aplica sólo en esta pestaña">Aplicar (solo aquí)</button>
+              <button class="btn" id="dbg-apply-send"  title="Aplica aquí y envía snapshot a la sala">Aplicar y ENVIAR</button>
+            </div>
+            <small class="muted">Formato: 10×10 (r,n,R,N, . / - / 0) o JSON 10×10.</small>
+          </div>
+        </div>
+      </details>
+  ` : ``;
+
+  // === Render del layout HTML ===
+  container.innerHTML = getOnlineLayoutHTML(DEBUG_PANEL_HTML);
+
   // ===== Identidad del cliente (anti-eco)
   const CLIENT_ID = Math.random().toString(36).slice(2);
-
   let applyingRemote = false;
 
   // ===== Estado base
@@ -155,29 +200,15 @@ export default function mountOnline(container){
     getBoard: () => board,
     getTurn:  () => turn,
     updateUI: (ok) => {
-      const $syncStatus = container.querySelector("#sync-status");
-      if (!$syncStatus) return;
-      if (ok) {
-        $syncStatus.textContent = "✓ Sincronizado";
-        $syncStatus.title = "Los estados coinciden entre pares";
-      } else {
-        $syncStatus.textContent = "⚠ Desincronizado… reintentando";
-        $syncStatus.title = "No coincide el estado local vs remoto. Solicitando snapshot…";
-      }
+      // Por ahora no mostramos nada en pantalla para el estado de sync
+      void ok;
     },
   });
 
-  // === Métricas (HUD)
+  // === Métricas (HUD) — sin UI visible (solo hook interno)
   function updateMetricsUI() {
     const m = syncMon.getMetrics?.() || { sent:0, recv:0, valid:0, invalid:0 };
-    const $mSent    = container.querySelector("#m-sent");
-    const $mRecv    = container.querySelector("#m-recv");
-    const $mValid   = container.querySelector("#m-valid");
-    const $mInvalid = container.querySelector("#m-invalid");
-    if ($mSent)    $mSent.textContent    = `↗ enviados: ${m.sent}`;
-    if ($mRecv)    $mRecv.textContent    = `↘ recibidos: ${m.recv}`;
-    if ($mValid)   $mValid.textContent   = `✓ válidos: ${m.valid}`;
-    if ($mInvalid) $mInvalid.textContent = `⚠ inválidos: ${m.invalid}`;
+    void m; // no se pinta nada, solo se podría loguear si se quiere
   }
   syncMon.onMetrics?.(updateMetricsUI);
 
@@ -251,120 +282,11 @@ export default function mountOnline(container){
     netSend({ t: "state", board: sanitizeBoard(board), turn, h });
   }
 
-  /* === Flags de entorno (GOLDEN/DEBUG) === */
-  const DEV_QUERY = (/[?&]dev=1\b/i).test(location.search);
-  const GOLDEN_ENABLED = DEV_QUERY || (/[?&]golden=1\b/i).test(location.search) || localStorage.getItem("D10_GOLDEN") === "1";
-  const DEBUG_ENABLED  = DEV_QUERY || (/[?&]debug=1\b/i).test(location.search)  || localStorage.getItem("D10_DEBUG")  === "1";
-
-  // Panel DEBUG gateado
-  const DEBUG_PANEL_HTML = DEBUG_ENABLED ? `
-      <details class="card" style="padding:10px 12px; margin-top:8px;">
-        <summary class="btn btn--subtle" style="cursor:pointer;">DEBUG · Cargar tablero</summary>
-        <div class="row" style="gap:12px; margin-top:8px; align-items:flex-start; flex-wrap:wrap;">
-          <textarea id="dbg-board-text" rows="10" cols="34" style="font-family:monospace; line-height:1.25; resize:vertical;"></textarea>
-          <div class="col" style="gap:8px; min-width:220px;">
-            <label class="btn btn--subtle">Turno:
-              <select id="dbg-turn" class="btn" style="margin-left:6px;">
-                <option value="R">R</option>
-                <option value="N">N</option>
-              </select>
-            </label>
-
-            <label class="btn btn--subtle" title="Si se pega un tablero mal alineado, limpia piezas en casillas claras">
-              <input type="checkbox" id="dbg-force-parity" style="margin-right:6px;">
-              Forzar casillas válidas (oscuras)
-            </label>
-
-            <div class="row" style="gap:8px; flex-wrap:wrap;">
-              <button class="btn" id="dbg-apply-local" title="Aplica sólo en esta pestaña">Aplicar (solo aquí)</button>
-              <button class="btn" id="dbg-apply-send"  title="Aplica aquí y envía snapshot a la sala">Aplicar y ENVIAR</button>
-            </div>
-            <small class="muted">Formato: 10×10 (r,n,R,N, . / - / 0) o JSON 10×10.</small>
-          </div>
-        </div>
-      </details>
-  ` : ``;
-
-  // ===== UI
-  container.innerHTML = `
-    <div class="col" style="gap:12px; padding:16px; max-width:980px; margin:0 auto;">
-      <h2 style="margin:0;">Jugar Online</h2>
-
-      <div class="card" style="padding:10px 12px;">
-        <div class="row" style="gap:8px; flex-wrap:wrap; align-items:center;">
-          <span id="turn-info" class="btn btn--subtle"></span>
-          <span id="sync-status" class="btn btn--subtle" title="Estado de sincronización">✓ Sincronizado</span>
-          <span class="btn btn--subtle" title="Tu color viene de la URL (?me=R o ?me=N)">Color fijado por URL</span>
-          <button class="btn" id="btn-restart">Reiniciar</button>
-          <button class="btn" id="btn-undo">Deshacer</button>
-          <button class="btn" id="btn-rotate" title="Invierte la orientación local del tablero">Rotar tablero</button>
-          <button class="btn" id="btn-back">Volver</button>
-        </div>
-      </div>
-
-      <div class="card" style="margin-top:12px; padding:12px; position:relative;">
-        <div id="board"></div>
-      </div>
-
-      ${DEBUG_PANEL_HTML}
-
-      <div class="card" style="padding:10px 12px; margin-top:8px;">
-        <div class="col" style="gap:8px;">
-          <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap;">
-            <label class="btn btn--subtle">Sala (BC):
-              <input id="room-id" class="btn" placeholder="p.ej. sala1" style="margin-left:6px; width:140px;">
-            </label>
-            <button class="btn" id="btn-connect">Conectar (BroadcastChannel)</button>
-            <span id="bc-status" class="btn btn--subtle">BC: Sin conexión</span>
-          </div>
-
-          <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap;">
-            <label class="btn btn--subtle">WS URL:
-              <input id="ws-url" class="btn" placeholder="ws://localhost:3001" style="margin-left:6px; width:220px;">
-            </label>
-            <label class="btn btn--subtle">Sala:
-              <input id="ws-room" class="btn" placeholder="sala1" style="margin-left:6px; width:120px;">
-            </label>
-            <button class="btn" id="btn-ws-connect">Conectar WS</button>
-            <span id="ws-status" class="btn btn--subtle">WS: Sin conexión</span>
-          
-            <button class="btn" id="btn-ws-quick">Conectar WS (LAN)</button>
-          </div>
-
-          <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
-            <span id="m-sent"    class="btn btn--subtle" title="Mensajes enviados">↗ enviados: 0</span>
-            <span id="m-recv"    class="btn btn--subtle" title="Mensajes recibidos">↘ recibidos: 0</span>
-            <span id="m-valid"   class="btn btn--subtle" title="Jugadas válidas (prevH ok)">✓ válidos: 0</span>
-            <span id="m-invalid" class="btn btn--subtle" title="Jugadas inválidas (prevH mismatch)">⚠ inválidos: 0</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="card" style="padding:10px 12px; margin-top:8px;">
-        <div class="col" style="gap:8px;">
-          <strong>Compartir enlace</strong>
-          <small class="muted">Copia y envía el link correspondiente. Deben estar en la misma sala.</small>
-
-          <div class="row" style="gap:8px; flex-wrap:wrap; align-items:center;">
-            <input id="share-link-r" class="btn" style="min-width:380px;" readonly>
-            <button class="btn" id="btn-copy-r">Copiar (Yo ROJO)</button>
-          </div>
-
-          <div class="row" style="gap:8px; flex-wrap:wrap; align-items:center;">
-            <input id="share-link-n" class="btn" style="min-width:380px;" readonly>
-            <button class="btn" id="btn-copy-n">Copiar (Yo NEGRO)</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  `;
-
-  // Refs
+  // === Refs DOM (después de renderizar layout) ===
   const $board      = container.querySelector("#board");
   const $turnInfo   = container.querySelector("#turn-info");
   const $btnBack    = container.querySelector("#btn-back");
   const $btnRestart = container.querySelector("#btn-restart");
-  const $btnUndo    = container.querySelector("#btn-undo");
   const $btnRotate  = container.querySelector("#btn-rotate");
   const $roomInput  = container.querySelector("#room-id");
   const $btnConnect = container.querySelector("#btn-connect");
@@ -373,10 +295,6 @@ export default function mountOnline(container){
   const $wsRoom     = container.querySelector("#ws-room");
   const $btnWSConn  = container.querySelector("#btn-ws-connect");
   const $wsStatus   = container.querySelector("#ws-status");
-  const $shareR     = container.querySelector("#share-link-r");
-  const $shareN     = container.querySelector("#share-link-n");
-  const $copyR      = container.querySelector("#btn-copy-r");
-  const $copyN      = container.querySelector("#btn-copy-n");
 
   if ($wsUrl) $wsUrl.value = WS_URL_FOR_QUERY;
 
@@ -492,7 +410,6 @@ export default function mountOnline(container){
     // join explícito + estado
     t.send({ t: "join", v: PROTO_V, room, clientId: CLIENT_ID });
     netSendState();
-    refreshShareLinks();
 
     try { seqCtl?.dispose?.(); } catch {}
     seqCtl = setupSeqReplay(netIface, currentRoom, { log: false });
@@ -515,7 +432,6 @@ export default function mountOnline(container){
     render();
 
     transport = createTransport("ws", safeRoom, handleNetMessage, handleWSStatus, { wsUrl: url || DEFAULT_WS });
-    refreshShareLinks();
 
     try { seqCtl?.dispose?.(); } catch {}
     seqCtl = setupSeqReplay(netIface, currentRoom, { log: false });
@@ -616,6 +532,20 @@ export default function mountOnline(container){
     onTurnChange: () => { setTurnText(); updateLock(); },
   };
 
+  // Helper para reinicio duro (usado por handshake)
+  function hardRestart() {
+    board = sanitizeBoard(startBoard());
+    stepState = null;
+    turn = COLOR.ROJO;
+    undoStack.length = 0;
+    render();
+    baseCtx.paintState();
+    setTurnText();
+    updateLock();
+    netSendState();
+    syncMon.onLocalChange?.();
+  }
+
   // Controller
   const controller = makeController({
     container,
@@ -650,16 +580,18 @@ export default function mountOnline(container){
   const exitEdit = () => { setPlacing(null); };
 
   const boardCard = $board.parentElement || container;
-  if (!ATTACH_TOOLBAR_PROMISE) {
-    ATTACH_TOOLBAR_PROMISE = import("./lib/editorToolbar.js")
-      .then(mod => mod?.default || mod?.attachEditorToolbar || null)
-      .catch(() => null);
-  }
-  ATTACH_TOOLBAR_PROMISE.then(fn => {
-    if (typeof fn === "function") {
-      try { fn(boardCard, { getPlacing, setPlacing, clearBoard, exitEdit }); } catch {}
+  if (EDITOR_TOOLBAR_ENABLED) {
+    if (!ATTACH_TOOLBAR_PROMISE) {
+      ATTACH_TOOLBAR_PROMISE = import("./lib/editorToolbar.js")
+        .then(mod => mod?.default || mod?.attachEditorToolbar || null)
+        .catch(() => null);
     }
-  });
+    ATTACH_TOOLBAR_PROMISE.then(fn => {
+      if (typeof fn === "function") {
+        try { fn(boardCard, { getPlacing, setPlacing, clearBoard, exitEdit }); } catch {}
+      }
+    });
+  }
 
   // --- Sanitización de payloads
   function safeCell(p){
@@ -676,31 +608,6 @@ export default function mountOnline(container){
       out.push([p[0]|0, p[1]|0]);
     }
     return out;
-  }
-
-  // ----- Compartir enlaces -----
-  function buildShareLinks() {
-    const params = new URLSearchParams(location.search);
-    const net   = (params.get("net") || "").trim().toLowerCase();
-    const room  = currentRoom || sanitizeRoom(params.get("room") || "sala1");
-    const ws    = (params.get("ws") || "").trim();
-    const base = `${location.origin}/online`;
-    const make = (side) => {
-      const p = new URLSearchParams();
-      p.set("me", side);
-      if (net)  p.set("net", net);
-      if (room) p.set("room", room);
-      if (net === "ws" && ws) p.set("ws", ws);
-      return `${base}?${p.toString()}`;
-    };
-    return { R: make("R"), N: make("N") };
-  }
-  function refreshShareLinks() {
-    try {
-      const { R, N } = buildShareLinks();
-      if ($shareR) $shareR.value = R;
-      if ($shareN) $shareN.value = N;
-    } catch {}
   }
 
   // ===== Recepción y aplicación de mensajes remotos
@@ -760,6 +667,27 @@ export default function mountOnline(container){
     if (msg.t === "hello" || msg.t === "join_ok" || msg.t === "join_ack") return;
 
     if (msg.t === "state_req"){ netSendState(); return; }
+
+    // Handshake de reinicio bilateral (señalizado como t:"ui" para pasar por el servidor)
+    if (msg.t === "ui" && msg.op === "restart_req") {
+      if (isSpectator) return;
+      const accept = confirm("El otro jugador quiere reiniciar la partida. ¿Aceptar?");
+      netSend({ t: "ui", op: "restart_ack", accepted: !!accept });
+      if (accept) {
+        hardRestart();
+      }
+      return;
+    }
+
+    if (msg.t === "ui" && msg.op === "restart_ack") {
+      if (msg.accepted) {
+        alert("El otro jugador aceptó. La partida se ha reiniciado.");
+        hardRestart();
+      } else {
+        alert("El otro jugador rechazó el reinicio.");
+      }
+      return;
+    }
 
     if (msg.t === "state") {
       try {
@@ -864,7 +792,6 @@ export default function mountOnline(container){
   }
 
   // ===== Montaje final
-  // Si no hay ?me= y aún no sabemos peers (p.ej. BC), decide por dispositivo ya
   if (!seatingAppliedOnce) {
     autoAssignSide();
   }
@@ -1066,39 +993,20 @@ export default function mountOnline(container){
   }
   updateOrientButton();
 
-  $btnRotate?.addEventListener("click", () => {
-    flipOrientation = !flipOrientation;
-    saveOrientFlip(currentRoom || urlRoom, flipOrientation);
-    updateOrientButton();
-    render();
-  });
-
-  $btnBack?.addEventListener("click", () => {
-    try { seqCtl?.dispose?.(); } catch {}
-    closeTransport();
-    container.innerHTML = "";
-    import("../Home/index.js").then(mod => mod.default?.(container));
-  });
-
-  $btnRestart?.addEventListener("click", () => {
-    const inChain = !!(stepState && Array.isArray(stepState.deferred) && stepState.deferred.length > 0);
-    if (inChain) { try { alert("Termina la cadena antes de reiniciar."); } catch {} return; }
-    board = sanitizeBoard(startBoard()); stepState = null; turn = COLOR.ROJO;
-    render(); baseCtx.paintState(); setTurnText(); updateLock();
-    netSendState();
-    syncMon.onLocalChange?.();
-  });
-
-  $btnUndo?.addEventListener("click", () => {
-    const inChain = !!(stepState && Array.isArray(stepState.deferred) && stepState.deferred.length > 0);
-    if (inChain) { try { alert("Termina la cadena antes de deshacer."); } catch {} return; }
-    const prev = undoStack.pop();
-    if (prev){
-      board = sanitizeBoard(prev);
-      render(); baseCtx.paintState();
-      netSendState();
-      syncMon.onLocalChange?.();
-    }
+  setupOnlineButtons({
+    container,
+    updateOrientButton,
+    getFlipOrientation: () => flipOrientation,
+    setFlipOrientation: (v) => { flipOrientation = v; },
+    saveFlip: saveOrientFlip,
+    getCurrentRoom: () => currentRoom,
+    urlRoom,
+    render,
+    getSeqCtl: () => seqCtl,
+    closeTransport,
+    netSend,
+    isSpectator,
+    getStepState: () => stepState,
   });
 
   // ===== Conexiones manuales
@@ -1117,29 +1025,9 @@ export default function mountOnline(container){
     connectWS(url, room);
   });
 
-// Conectar rápido con el host actual (LAN)
-const $btnWSQuick = container.querySelector("#btn-ws-quick");
-$btnWSQuick?.addEventListener("click", () => {
-  // Tomamos el host actual del navegador (IP o hostname) y forzamos puerto 3001
-  const h = location.hostname || "localhost";
-  const wsUrlQuick = (location.protocol === "https:" ? `wss://${h}:3001` : `ws://${h}:3001`);
-  if ($wsUrl)  $wsUrl.value  = wsUrlQuick;
-  if ($wsRoom) $wsRoom.value = sanitizeRoom(urlRoom || "sala1");
-  if ($wsStatus) $wsStatus.textContent = "WS: Conectando…";
-  connectWS(wsUrlQuick, sanitizeRoom(urlRoom || "sala1"));
-});
-
   // Autoconexión por URL
   if (urlNet === "bc") connectBC(urlRoom);
   else if (urlNet === "ws") connectWS(WS_URL_FOR_QUERY, urlRoom);
-
-  // Compartir: copiar al portapapeles
-  $copyR?.addEventListener("click", async () => { try { await navigator.clipboard.writeText($shareR.value || ""); } catch {} });
-  $copyN?.addEventListener("click", async () => { try { await navigator.clipboard.writeText($shareN.value || ""); } catch {} });
-
-  // Inicial: métricas + enlaces
-  updateMetricsUI?.();
-  refreshShareLinks();
 
   // DEBUG: aplicar tablero desde panel (con opción forzar casillas válidas)
   $dbgApplyLocal?.addEventListener("click", () => {
@@ -1154,7 +1042,7 @@ $btnWSQuick?.addEventListener("click", () => {
       }
       turn = newTurn; stepState = null;
       render(); baseCtx.paintState(); setTurnText(); updateLock();
-      syncMon.onLocalChange?.(); updateMetricsUI(); refreshShareLinks();
+      syncMon.onLocalChange?.(); updateMetricsUI();
     } catch (e) { alert("Error: " + e.message); }
   });
   $dbgApplySend?.addEventListener("click", () => {
@@ -1170,7 +1058,7 @@ $btnWSQuick?.addEventListener("click", () => {
       turn = newTurn; stepState = null;
       render(); baseCtx.paintState(); setTurnText(); updateLock();
       netSendState();
-      syncMon.onLocalChange?.(); updateMetricsUI(); refreshShareLinks();
+      syncMon.onLocalChange?.(); updateMetricsUI();
     } catch (e) { alert("Error: " + e.message); }
   });
 }

@@ -1,5 +1,3 @@
-/* src/ui/pages/Training/editor/editor.responsive.css */
-
 /* ============================================================
    EDITOR / MODO ENTRENAMIENTO — RESPONSIVE (LIMPIO, UNIFICADO)
    ============================================================ */
@@ -100,23 +98,24 @@ html,body,#app,#root{background:#EAF6FF!important;}
    ────────────────────────────────────────────────────────────── */
 .sidebar { align-self: start; }
 
+/* Base: grid unificado y consistente (2 col base) */
 .sidebar #tools,
 #toolbar {
   display: grid !important;
-  grid-template-columns: repeat(2, minmax(0, 1fr)) !important; /* 2 col fijas */
-  grid-auto-rows: 50px !important;                               /* filas iguales */
-  grid-auto-flow: row !important;                                /* *** sin dense *** */
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  grid-auto-rows: 50px !important;
+  grid-auto-flow: row !important;
   gap: 12px !important;
   align-items: stretch !important;
   justify-items: stretch !important;
   box-sizing: border-box !important;
 }
 
-/* Normalizar hijos directos a 1 columna (por defecto) */
+/* Normalizar hijos directos */
 .sidebar #tools > *,
 #toolbar > * {
   margin: 0 !important;
-  grid-column: auto / span 1 !important;  /* 1 col */
+  grid-column: auto / span 1 !important;
   width: 100% !important;
   min-height: 50px !important;
   height: 50px !important;
@@ -133,13 +132,11 @@ html,body,#app,#root{background:#EAF6FF!important;}
   vertical-align: middle !important;
 }
 
-/* Resets tipográficos que alteraban la altura real */
+/* Tipografía / iconos */
 .sidebar #tools :where(span,small,strong,em,i,svg,img){ line-height:1; }
 .sidebar #tools :where(p,div){ margin:0; }
 #toolbar :where(span,small,strong,em,i,svg,img){ line-height:1; }
 #toolbar :where(p,div){ margin:0; }
-
-/* Tamaño de iconos consistente */
 .sidebar #tools .ico,
 .sidebar #tools [class^="ico--"],
 .sidebar #tools [class*=" ico--"],
@@ -152,22 +149,20 @@ html,body,#app,#root{background:#EAF6FF!important;}
   display: inline-block !important;
 }
 
-/* Botones de FILA COMPLETA (span 2 columnas) */
+/* Botones que deben ocupar toda la fila */
 #btn-menu,
-#btn-rotate,
-#btn-download-fen,
-#btn-copy-fen {
-  grid-column: 1 / -1 !important;
-}
+#btn-rotate { grid-column: 1 / -1 !important; }
 
-/* Neutralizar wrappers que rompían el grid */
+/* ELIMINAR botones de FEN (ocultos) */
+#btn-download-fen,
+#btn-copy-fen { display: none !important; }
+
+/* Neutralizar wrappers raros */
 .sidebar > div[style*="flex-wrap"],
 .sidebar #tools > .btn-group,
 #toolbar > .btn-group,
 .sidebar #tools > .group,
-#toolbar > .group {
-  display: contents !important;
-}
+#toolbar > .group { display: contents !important; }
 
 /* Dropdowns/Popovers fuera del flow */
 .sidebar #tools .dropdown-menu,
@@ -179,12 +174,12 @@ html,body,#app,#root{background:#EAF6FF!important;}
   z-index: 30;
 }
 
-/* Estados disabled */
+/* Disabled */
 .sidebar #tools .btn[disabled],
 #toolbar .btn[disabled] { opacity: .6; pointer-events: none; }
 
 /* ──────────────────────────────────────────────────────────────
-   Breakpoints unificados (grilla principal)
+   Breakpoints del LAYOUT principal
    ────────────────────────────────────────────────────────────── */
 
 /* ≥1200: panel izq | tablero | toolbar (3 columnas) */
@@ -199,14 +194,30 @@ html,body,#app,#root{background:#EAF6FF!important;}
   #board { position: relative; z-index: 1; }
 }
 
-/* 900–1199: tablero | toolbar (panel izq debajo) */
+/* 900–1199: tablero | toolbar (sin superposición) */
 @media (min-width:900px) and (max-width:1199.98px){
   .board-row,
-  .editor-layout { grid-template-columns: minmax(440px, 1fr) 300px !important; }
+  .editor-layout {
+    grid-template-columns: minmax(560px, 1fr) 320px !important;
+    column-gap: 16px !important;
+  }
   #left-dock, .dock-turno { grid-column: 1 / -1; }
+
+  /* Asegurar stacking correcto: tablero debajo, toolbar encima */
+  #board { justify-self:center !important; position:relative !important; z-index:1 !important; }
+  .editor-layout .sidebar { position:relative !important; z-index:2 !important; }
+
+  /* En este rango, la toolbar en 1 columna para claridad */
+  .sidebar #tools,
+  #toolbar {
+    grid-template-columns: 1fr !important;
+    grid-auto-rows: 50px !important;
+    gap: 10px !important;
+    width: 100% !important;
+  }
 }
 
-/* ≤899: 1 columna (apila todo) */
+/* ≤899: 1 columna de layout */
 @media (max-width:899.98px){
   .board-row,
   .editor-layout {
@@ -214,38 +225,67 @@ html,body,#app,#root{background:#EAF6FF!important;}
     grid-template-rows: auto auto auto;
     gap: 12px;
   }
+}
+
+/* Teléfono MUY angosto (≤360): 1 columna para no apretar */
+@media (max-width:359.98px){
   .sidebar #tools,
   #toolbar {
     grid-template-columns: 1fr !important;
-    grid-auto-rows: auto !important;
+    grid-auto-rows: 48px !important;
     gap: 8px !important;
     width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 auto !important;
   }
 }
 
-/* Teléfono angosto */
-@media (max-width:480px){
-  #board.board-fluid{
-    width: 92vw !important;
-    max-width: 92vw !important;
-    aspect-ratio: 1 / 1 !important;
-    height: auto !important;
+/* Teléfonos 360–540: 2 columnas */
+@media (min-width:360px) and (max-width:540.98px){
+  .sidebar #tools,
+  #toolbar {
+    grid-template-columns: 1fr 1fr !important;
+    grid-auto-rows: 48px !important;
+    gap: 10px !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 auto !important;
+    justify-content: center !important;
+    justify-items: stretch !important;
   }
 }
 
-/* Landscape con poca altura */
-@media (orientation: landscape) and (max-height:560px){
-  #board.board-fluid{ width: min(68vmin, 500px) !important; }
+/* Tablets pequeñas (incluye iPad Mini 768) — 2 columnas centradas */
+:root{ --tools-max: 640px; --row-h: 52px; }
+
+@media (min-width:541px) and (max-width:899.98px){
+  .editor-layout .sidebar{
+    width: 100% !important;
+    max-width: var(--tools-max) !important;
+    margin: 0 auto !important;
+    justify-self: center !important;
+  }
+
+  .editor-layout .sidebar #tools,
+  #toolbar{
+    grid-template-columns: 1fr 1fr !important;
+    grid-auto-rows: var(--row-h) !important;
+    gap: 12px !important;
+    width: 100% !important;
+    max-width: var(--tools-max) !important;
+    margin: 0 auto !important;
+    justify-content: center !important;
+    justify-items: stretch !important;
+  }
+
+  #btn-menu, #btn-rotate { grid-column: 1 / -1 !important; }
 }
 
 /* ──────────────────────────────────────────────────────────────
-   Detalles extra
+   Extras de visibilidad/scroll (móvil)
    ────────────────────────────────────────────────────────────── */
 #group-save-load-local{ align-self: stretch; }
 
-/* ===========================================================
-   HOTFIX VISIBILIDAD EN MÓVIL (scroll y sin cortes)
-   =========================================================== */
 @media (max-width:900px){
   html,body,#app,#root,[data-editor-root]{
     height:auto!important;min-height:0!important;overflow-y:auto!important;-webkit-overflow-scrolling:touch!important;
@@ -271,8 +311,6 @@ html,body,#app,#root{background:#EAF6FF!important;}
 /* ──────────────────────────────────────────────────────────────
    GHOST-BUSTERS: colapsar nodos invisibles que ocupan celdas
    ────────────────────────────────────────────────────────────── */
-
-/* 1) Todo hijo directo oculto o sin contenido NO debe ocupar celda */
 #toolbar > [hidden],
 .sidebar #tools > [hidden],
 #toolbar > .hidden,
@@ -294,24 +332,337 @@ html,body,#app,#root{background:#EAF6FF!important;}
 #toolbar > hr,
 .sidebar #tools > hr,
 #toolbar > :empty,
-.sidebar #tools > :empty {
-  display: none !important;
-}
+.sidebar #tools > :empty { display: none !important; }
 
-/* 2) Wrappers vacíos típicos */
 #toolbar > div:empty,
-.sidebar #tools > div:empty {
-  display: none !important;
-}
+.sidebar #tools > div:empty { display: none !important; }
 
-/* 3) Wrappers “inofensivos” pasan a contents para no generar caja */
 #toolbar > div:not([class*="btn"]):not(.btn-group):not(.group),
 .sidebar #tools > div:not([class*="btn"]):not(.btn-group):not(.group) {
   display: contents !important;
 }
 
-/* 4) Asegurar flujo estable (sin relleno de huecos) */
 #toolbar,
-.sidebar #tools {
-  grid-auto-flow: row !important;   /* NO dense */
+.sidebar #tools { grid-auto-flow: row !important; } /* NO dense */
+
+/* === HOTFIX iPad Pro (1024×1366) y rango medio (900–1199px)
+   - Forzar layout de 2 columnas: [TABLERO] [TOOLBAR]
+   - Mover panel izquierdo (turno/WAN) debajo (span completo)
+   - Evitar que la toolbar quede sticky/absoluta y se monte sobre el tablero
+================================================================== */
+@media (min-width: 900px) and (max-width: 1199.98px) {
+
+  /* 2 columnas cómodas: tablero + sidebar */
+  .board-row,
+  .editor-layout {
+    grid-template-columns: minmax(560px, 1fr) 320px !important; /* ⇠ ajusta 320 si quieres más/menos toolbar */
+    column-gap: 16px !important;
+    align-items: start !important;
+  }
+
+  /* Asegurar qué va en cada columna */
+  .editor-layout #board {
+    grid-column: 1 / 2 !important;
+    max-width: 700px !important; /* cabe con sidebar de 320px en 1024px */
+    justify-self: center !important;
+    position: relative !important;
+    z-index: 1 !important; /* por debajo de overlays */
+  }
+
+  .editor-layout .sidebar {
+    grid-column: 2 / 3 !important;
+    position: static !important;   /* quitar sticky/absolute para que no se monte */
+    top: auto !important;
+    z-index: 2 !important;
+    width: 100% !important;
+  }
+
+  /* Dentro de la toolbar, una sola columna vertical para que quepa */
+  .sidebar #tools,
+  #toolbar {
+    grid-template-columns: 1fr !important;
+    grid-auto-rows: 50px !important;
+    gap: 10px !important;
+    width: 100% !important;
+  }
+
+  /* Panel izquierdo (turno/WAN) y cualquier “dock” a FILA COMPLETA debajo */
+  #left-dock,
+  .dock-turno,
+  #turn-dock,
+  .wan-panel,
+  .wan-card {
+    grid-column: 1 / -1 !important;  /* ocupar todo el ancho, debajo del tablero+toolbar */
+    position: static !important;
+    top: auto !important;
+  }
+
+  /* Por si hay clases sticky genéricas en la sidebar */
+  .editor-layout .sidebar [class*="sticky"],
+  .editor-layout [style*="position: sticky"] {
+    position: static !important;
+    top: auto !important;
+  }
+}
+
+/* ===== iPad Pro & rango medio (900–1199px) — FIX definitivo ===== */
+@media (min-width: 900px) and (max-width: 1199.98px) {
+  /* Grid de 2 columnas: [ TABLERO | TOOLBAR ] */
+  .board-row,
+  .editor-layout {
+    display: grid !important;
+    grid-template-columns: minmax(560px, 1fr) 340px !important; /* ajusta 340 si deseas más/menos barra */
+    column-gap: 16px !important;
+    align-items: start !important;
+    justify-content: center !important;
+    width: 100% !important;
+    margin: 0 auto !important;
+  }
+
+  /* Tablero: ancho máximo calculado para que nunca tape la barra */
+  #board {
+    grid-column: 1 / 2 !important;
+    /* 340 (sidebar) + 16 (gap) + 32 (reserva) => espacio para que no solape */
+    max-width: calc(100vw - 340px - 16px - 32px) !important;
+    width: min(820px, 100%) !important;
+    justify-self: center !important;
+    position: relative !important;
+    z-index: 1 !important; /* por debajo de la barra */
+  }
+
+  /* Canvas interno sigue adaptándose al contenedor del tablero */
+  #board .board-canvas-fluid { width: 100% !important; height: 100% !important; }
+
+  /* Sidebar/toolbar: sin sticky/absolute, sin floats, ocupa su columna */
+  .editor-layout .sidebar,
+  #toolbar,
+  .sidebar #tools {
+    grid-column: 2 / 3 !important;
+    position: static !important;
+    top: auto !important;
+    float: none !important;
+    width: 100% !important;
+    max-width: 340px !important;
+    z-index: 2 !important; /* por encima del tablero */
+  }
+
+  /* Dentro de la toolbar: una sola columna vertical (cabe perfecto) */
+  .sidebar #tools,
+  #toolbar {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    grid-auto-rows: 50px !important;
+    gap: 10px !important;
+    justify-items: stretch !important;
+  }
+
+  /* Botones “fila completa” permanecen ocupando todo el ancho de la barra */
+  #btn-menu,
+  #btn-rotate { grid-column: 1 / -1 !important; }
+
+  /* Cualquier panel izquierdo (turno/WAN) baja debajo del grid principal */
+  #left-dock,
+  .dock-turno,
+  #turn-dock,
+  .wan-panel,
+  .wan-card {
+    grid-column: 1 / -1 !important;
+    position: static !important;
+    top: auto !important;
+    margin-bottom: 12px !important;
+  }
+
+  /* Cortes de posibles estilos heredados que empujan o superponen */
+  .editor-layout [style*="position: sticky"],
+  .editor-layout .sidebar [class*="sticky"] {
+    position: static !important;
+    top: auto !important;
+  }
+  .editor-layout .sidebar *,
+  #toolbar * {
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
+   REFUERZO GLOBAL ANTI-CORTE DE SCROLL (901–1199px)
+   ────────────────────────────────────────────────────────────── */
+@media (max-width:1199.98px){
+  html, body { overflow-y: auto !important; }
+}
+
+/* --- Alinear tablero y toolbar debajo del bloque de turno/WAN --- */
+#board-row {
+  margin-top: 12px !important; /* separa un poco del panel superior */
+}
+
+#left-dock, #turn-dock, .wan-panel {
+  margin-bottom: 12px !important; /* separación consistente */
+}
+
+/* iPad Pro 1024×1366 (900–1199px) — pulido final */
+@media (min-width:900px) and (max-width:1199.98px){
+
+  /* respiración arriba del grid */
+  #board-row { margin-top: 12px !important; }
+
+  /* bloque Turno/WAN en fila completa con separación */
+  .__leftDockInGrid { margin-bottom: 12px !important; }
+
+  /* ancho de la barra; si te queda muy angosta, súbelo a 340/360 */
+  #right-panel { max-width: 332px !important; }
+
+  /* asegúrate de que el tablero nunca tape la barra */
+  #board {
+    max-width: calc(100vw - 332px - 16px - 24px) !important;
+    justify-self: center !important;
+  }
+
+  /* scroll interno si hay muchos botones */
+  #right-panel { max-height: calc(100dvh - 220px) !important; overflow: auto !important; }
+}
+
+/* ——— ANTI-OVERFLOW & GRID LOCK para iPad 1024×1366 ——— */
+@media (min-width:900px) and (max-width:1199.98px){
+  html, body, .design-scope, #app, #root, [data-editor-root]{
+    height:auto !important;
+    min-height:0 !important;
+    overflow-y:auto !important;
+    overflow-x:hidden !important;
+  }
+
+  /* Bloquea el layout en 2 columnas y evita superposición */
+  #board-row{
+    display:grid !important;
+    grid-template-columns:minmax(560px,1fr) 340px !important;
+    gap:16px !important;
+    align-items:start !important;
+    margin-top:12px !important;
+  }
+  #right-panel{
+    position:static !important;
+    top:auto !important;
+    max-width:340px !important;
+    z-index:2 !important;
+    max-height:calc(100dvh - 220px) !important;
+    overflow:auto !important;
+  }
+  #right-panel #tools, #right-panel #toolbar{
+    display:grid !important;
+    grid-template-columns:1fr !important;
+    grid-auto-rows:50px !important;
+    gap:10px !important;
+  }
+  /* El tablero nunca tapa la barra */
+  #board{
+    grid-column:1 / 2 !important;
+    max-width:calc(100vw - 340px - 16px - 24px) !important;
+    justify-self:center !important;
+    position:relative !important;
+    z-index:1 !important;
+  }
+  /* Panel Turno/WAN cae debajo del bloque superior */
+  #left-dock, .dock-turno, #turn-dock, .wan-panel, .wan-card{
+    grid-column:1 / -1 !important;
+    position:static !important;
+    margin-bottom:12px !important;
+  }
+}
+/* ===== FIX FINAL iPad Pro (1024×1366) y rango 900–1199px ===== */
+@media (min-width: 900px) and (max-width: 1199.98px) {
+  /* Contenedor: 2 columnas [TABLERO | TOOLBAR] centradas */
+  #board-row,
+  .board-row,
+  .editor-layout {
+    display: grid !important;
+    grid-template-columns: minmax(560px, 1fr) 340px !important;
+    column-gap: 16px !important;
+    align-items: start !important;
+    justify-content: center !important;
+    width: 100% !important;
+    margin: 12px auto 0 auto !important;
+  }
+
+  /* Tablero: nunca invade la columna de la barra */
+  #board {
+    grid-column: 1 / 2 !important;
+    /* 340 (barra) + 16 (gap) + 24 (reserva) ⇒ evita solape */
+    max-width: calc(100vw - 340px - 16px - 24px) !important;
+    width: min(820px, 100%) !important;
+    justify-self: center !important;
+    position: relative !important;
+    z-index: 1 !important; /* debajo de la barra */
+  }
+  #board.board-fluid { aspect-ratio: 1 / 1 !important; height: auto !important; }
+  #board .board-canvas-fluid { width: 100% !important; height: 100% !important; display: block !important; }
+
+  /* Sidebar/toolbar: fija a la 2ª columna, sin sticky ni floats */
+  #right-panel,
+  .editor-layout .sidebar,
+  #toolbar,
+  .sidebar #tools {
+    grid-column: 2 / 3 !important;
+    position: static !important;
+    top: auto !important;
+    float: none !important;
+    width: 100% !important;
+    max-width: 340px !important;
+    z-index: 2 !important; /* sobre el tablero */
+  }
+
+  /* Contenido de la barra: una sola columna vertical cómoda */
+  #right-panel #tools,
+  #right-panel #toolbar,
+  .sidebar #tools,
+  #toolbar {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    grid-auto-rows: 50px !important;
+    gap: 10px !important;
+    align-items: stretch !important;
+    justify-items: stretch !important;
+  }
+  #right-panel #tools > *,
+  #right-panel #toolbar > *,
+  .sidebar #tools > *,
+  #toolbar > * {
+    width: 100% !important;
+    height: 50px !important;
+    min-height: 50px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    gap: 8px !important;
+    padding: 10px 14px !important;
+    box-sizing: border-box !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+  }
+
+  /* Bloque Turno/WAN ocupa fila completa encima del grid principal */
+  .__leftDockInGrid,
+  #left-dock,
+  .dock-turno,
+  #turn-dock,
+  .wan-panel,
+  .wan-card {
+    grid-column: 1 / -1 !important;
+    position: static !important;
+    top: auto !important;
+    margin-bottom: 12px !important;
+  }
+
+  /* Anula cualquier “sticky” heredado que pudiera superponer */
+  .editor-layout [style*="position: sticky"],
+  .editor-layout .sidebar [class*="sticky"] {
+    position: static !important;
+    top: auto !important;
+  }
+}
+
+/* Pequeño refuerzo global: permite scroll vertical si hace falta */
+@media (max-width: 1199.98px) {
+  html, body { overflow-y: auto !important; }
 }

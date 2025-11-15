@@ -1,45 +1,126 @@
-/* === PATCH: Compactar botones superiores de la TOOLBAR (Editor/Entrenamiento) === */
-/* Objetivo: 5 botones de acción (Cambiar turno, Guardar posición, Cargar posición, Importar, Compartir)
-   - Altura: 32px
-   - Padding horizontal: 8px
-   - Tipografía: 13px
-   - Separación vertical entre botones: 6px
-   - Sin tocar estilos globales ni el panel WAN (el WAN se restaura abajo)
-*/
+/* ============================================================
+   TOOLBAR — Estilos unificados y compactos (Editor/Entrenamiento)
+   ============================================================ */
 
-/* 1) Compactar TODOS los botones que estén en la toolbar (robusto a wrappers) */
-.editor-layout .toolbar {
+/* Base para .toolbar y .toolbar-vertical */
+.editor-layout .toolbar,
+.editor-layout .toolbar-vertical,
+.editor-layout #tools.toolbar-vertical {
   display: grid;
   grid-template-columns: 1fr;
-  row-gap: 6px !important;          /* ↓ espacio entre filas */
+  row-gap: 6px;
+  column-gap: 10px;
+  align-items: stretch;
+  justify-content: center;
+  width: 100%;
 }
 
-/* Remover márgenes que puedan inflar el espacio entre filas */
+/* Normalizar botones */
+.editor-layout .toolbar :is(button, .btn, a.btn, #btn-cambiar-turno),
+.editor-layout .toolbar-vertical :is(button, .btn, a.btn),
+.editor-layout #tools.toolbar-vertical :is(button, .btn, a.btn) {
+  height: 32px;
+  padding: 0 8px;
+  font-size: 13px;
+  line-height: 1;
+  border-radius: 10px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+/* Remover márgenes heredados */
 .editor-layout .toolbar > *,
-.editor-layout .toolbar > * > * {
+.editor-layout .toolbar > * > *,
+.editor-layout #tools.toolbar-vertical > *,
+.editor-layout #tools.toolbar-vertical > * > * {
   margin: 0 !important;
 }
 
-/* Reglas de compactación para cualquier botón/anchor con estilo de botón dentro de la toolbar */
-.editor-layout .toolbar :is(button, .btn, a.btn, #btn-cambiar-turno) {
-  height: 32px !important;          /* ↓ altura */
-  padding: 0 8px !important;        /* ↓ padding */
-  font-size: 13px !important;       /* ↓ fuente */
-  border-radius: 10px !important;   /* radio acorde a nueva altura */
-  line-height: 1 !important;
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  gap: 6px !important;
-  box-sizing: border-box !important;
-}
-
-/* 2) Restaura tamaño ORIGINAL para botones que estén dentro del bloque WAN,
-      para no afectar esa sección si no se desea. */
+/* Tamaño original para botones WAN (no tocarlos) */
 .editor-layout .toolbar .wan-panel :is(button, .btn, a.btn),
-.editor-layout .toolbar .wan-card  :is(button, .btn, a.btn) {
+.editor-layout .toolbar .wan-card  :is(button, .btn, a.btn),
+.editor-layout #tools.toolbar-vertical .wan-panel :is(button, .btn, a.btn),
+.editor-layout #tools.toolbar-vertical .wan-card  :is(button, .btn, a.btn) {
   height: 46px !important;
   padding: 0 12px !important;
   font-size: 14px !important;
   border-radius: 12px !important;
 }
+
+/* ============================================================
+   MÓVIL — Botones del editor alineados AL LADO DERECHO
+   ============================================================ */
+
+@media (max-width: 899.98px) {
+
+  /* Forzamos que TODO dentro de la toolbar se vaya al lado derecho */
+  .editor-layout .toolbar {
+    justify-items: end !important;     /* ✅ Botones a la derecha */
+    justify-content: end !important;   /* ✅ Contenedor empujado a la derecha */
+    text-align: right !important;
+    grid-template-columns: 1fr !important; /* una columna limpia */
+  }
+
+  /* Cualquier wrapper interno también alineado a la derecha */
+  .editor-layout .toolbar > *,
+  .editor-layout .toolbar > * > * {
+    display: flex !important;
+    justify-content: flex-end !important; /* ✅ derecha */
+    width: 100% !important;
+  }
+
+  /* Cada botón debe colocarse en el lado derecho */
+  .editor-layout .toolbar :is(button, .btn, a.btn, #btn-cambiar-turno) {
+    justify-self: end !important;      /* ✅ derecha */
+    margin-left: auto !important;      /* ✅ empuja a la derecha */
+    margin-right: 0 !important;
+    width: auto !important;            /* evita que se estiren demasiado */
+    max-width: 95%;                    /* y mantiene buena vista visual */
+  }
+}
+
+/* ============================================================
+   EXTRA — Ultra móviles
+   ============================================================ */
+@media (max-width: 420px) {
+  .editor-layout .toolbar {
+    max-height: calc(100vh - 220px);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+/* === ULTRA RIGHT PATCH — Botones PEGADOS al borde derecho en móvil === */
+@media (max-width: 899.98px) {
+
+  /* La toolbar completa se va al extremo derecho */
+  .editor-layout .toolbar {
+    justify-items: end !important;
+    justify-content: end !important;
+    align-items: end !important;
+  }
+
+  /* Todo wrapper interno también empuja al lado derecho */
+  .editor-layout .toolbar > *,
+  .editor-layout .toolbar > * > * {
+    display: flex !important;
+    justify-content: flex-end !important; 
+    width: 100% !important;
+  }
+
+  /* El BOTÓN en sí mismo pegado al borde derecho */
+  .editor-layout .toolbar :is(button, .btn, a.btn, #btn-cambiar-turno) {
+    justify-self: end !important;
+    margin-right: 0 !important;      /* sin margen */
+    margin-left: auto !important;    /* empuja totalmente hacia la derecha */
+    width: auto !important;
+    max-width: none !important;      /* evita restricciones de ancho */
+    transform: translateX(4px);      /* ✅ empujón final al borde derecho */
+  }
+}
+
+/* Puedes aumentar este valor (ej. 8px) si quieres que toquen aún más el borde */

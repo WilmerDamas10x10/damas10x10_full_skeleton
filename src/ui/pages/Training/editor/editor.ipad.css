@@ -1,0 +1,102 @@
+/* ===== FIX DEFINITIVO iPad Pro (1024×1366) y 900–1199px ===== */
+
+/* Quita márgenes del UA para que el layout no se “achique” */
+html, body { margin: 0 !important; }
+
+/* Refuerzo global: permitir scroll vertical en este rango */
+@media (max-width: 1199.98px) {
+  html, body { overflow-y: auto !important; }
+}
+
+/* Contenedor principal: 2 columnas [TABLERO | TOOLBAR] centradas */
+@media (min-width: 900px) and (max-width: 1199.98px) {
+  /* Asegura que CUALQUIERA de estos nodos sea el grid correcto */
+  #board-row,
+  .board-row,
+  .editor-layout {
+    display: grid !important;
+    grid-template-columns: minmax(560px, 1fr) 340px !important;
+    column-gap: 16px !important;
+    align-items: start !important;
+    justify-content: center !important;
+    width: 100% !important;
+    margin: 12px auto 0 !important;
+  }
+
+  /* TABLERO: nunca invade la barra */
+  #board {
+    grid-column: 1 / 2 !important;
+    /* 340 (barra) + 16 (gap) + 24 (reserva) */
+    max-width: calc(100vw - 340px - 16px - 24px) !important;
+    width: min(820px, 100%) !important;
+    justify-self: center !important;
+    position: relative !important;
+    z-index: 1 !important;
+  }
+  #board.board-fluid { aspect-ratio: 1 / 1 !important; height: auto !important; }
+  #board .board-canvas-fluid { width: 100% !important; height: 100% !important; display: block !important; }
+
+  /* BARRA: queda fija en la 2ª columna, sin sticky ni floats */
+  #right-panel,
+  .editor-layout .sidebar,
+  #toolbar,
+  .sidebar #tools {
+    grid-column: 2 / 3 !important;
+    position: static !important;
+    top: auto !important;
+    float: none !important;
+    width: 100% !important;
+    max-width: 340px !important;
+    z-index: 2 !important; /* sobre el tablero */
+  }
+
+  /* Contenido de la barra en una sola columna cómoda */
+  #right-panel #tools,
+  #right-panel #toolbar,
+  .sidebar #tools,
+  #toolbar {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    grid-auto-rows: 50px !important;
+    gap: 10px !important;
+    align-items: stretch !important;
+    justify-items: stretch !important;
+  }
+  #right-panel #tools > *,
+  #right-panel #toolbar > *,
+  .sidebar #tools > *,
+  #toolbar > * {
+    width: 100% !important;
+    height: 50px !important;
+    min-height: 50px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    gap: 8px !important;
+    padding: 10px 14px !important;
+    box-sizing: border-box !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+  }
+
+  /* Bloque Turno/WAN a fila completa, encima del grid */
+  .__leftDockInGrid,
+  #left-dock,
+  .dock-turno,
+  #turn-dock,
+  .wan-panel,
+  .wan-card {
+    grid-column: 1 / -1 !important;
+    position: static !important;
+    top: auto !important;
+    margin-bottom: 12px !important;
+  }
+
+  /* Anula cualquier sticky heredado que cause superposición */
+  .editor-layout [style*="position: sticky"],
+  .editor-layout .sidebar [class*="sticky"] {
+    position: static !important;
+    top: auto !important;
+  }
+}
