@@ -1,31 +1,34 @@
 // src/ai/minimax.js
-// Minimax + Alpha-Beta con Iterative Deepening, Transposition Table (Zobrist)
-// + filtro SEE en raíz y quiescence básica.
-// ***FIX***: Captura obligatoria aplicada en TODAS las profundidades.
+// Minimax + Alpha-Beta con TT (Zobrist), quiescence y SEE en raíz.
+// Captura obligatoria en todos los niveles + preferencia de Dama en EMPATE,
+// con PREFILTRO ESTRICTO en la RAÍZ para asegurar que la IA elija Dama si existe
+// una captura empatada por puntos. Incluye cortes por tiempo/nodos.
 
 export function minimaxChooseBestMove(board, side, depth, helpers, opts = {}) {
-  const {
-    COLOR, SIZE, colorOf,
-    movimientos, aplicarMovimiento, crownIfNeeded, evaluate
-  } = helpers;
+  const { COLOR, SIZE, colorOf, movimientos, aplicarMovimiento, crownIfNeeded, evaluate } = helpers;
 
-  // ---------------- Settings ----------------
   const settings = {
     maxDepth: Math.max(2, depth | 0),
-    timeMs: opts.timeMs ?? 350,
-    rootCaptureOnly: opts.rootCaptureOnly ?? true, // se mantiene para raíz, pero igual forzaremos abajo
+    timeMs: opts.timeMs ?? 900,
     quiescence: opts.quiescence ?? true,
     useSEE: opts.useSEE ?? true,
-    seePenaltyMargin: opts.seePenaltyMargin ?? -0.05,
+    seePenaltyMargin: opts.seePenaltyMargin ?? -0.08,
     useTT: true,
     useMVVLVA: true,
-    useTTMoveFirst: true
+    useTTMoveFirst: true,
+    nodeBudget: 150_000,
   };
 
   const INF = Infinity;
   const me  = side;
 
-  // ---------------- Utils ----------------
+  // Tiempo/Nodos
+  const t0 = Date.now();
+  const deadline = t0 + settings.timeMs;
+  const timeUp   = () => Date.now() >= deadline;
+  let nodes = 0;
+
+  // Utils
   const cloneBoard = (b) => b.map(r => r.slice());
   const rc = (p) => Array.isArray(p) ? p : [p.r, p.c];
   const sameRC = (a,b) => a && b && a[0]===b[0] && a[1]===b[1];
@@ -54,7 +57,7 @@ export function minimaxChooseBestMove(board, side, depth, helpers, opts = {}) {
       const ch = b[r][c];
       if (ch){
         count++;
-        if (colorOf(ch) === who) return null; // pieza propia en la línea: no es salto válido
+        if (colorOf(ch) === who) return null; // bloqueado por pieza propia
         mid = [r,c];
       }
     }
@@ -63,8 +66,7 @@ export function minimaxChooseBestMove(board, side, depth, helpers, opts = {}) {
 
   function applySingleCapture(b, from, to){
     const nb = cloneBoard(b);
-    const [fr, fc] = from;
-    const [tr, tc] = to;
+    const [fr, fc] = from, [tr, tc] = to;
     const piece = nb[fr][fc];
     if (!piece) return nb;
     const mid = findMidOnBoard(nb, from, to, colorOf(piece));
@@ -102,11 +104,8 @@ export function minimaxChooseBestMove(board, side, depth, helpers, opts = {}) {
     return { captures, quiet };
   }
 
-  // ---------------- SEE (solo raíz, para quiet) ----------------
-  function pieceValue(ch){
-    if (!ch) return 0;
-    return (ch === 'R' || ch === 'N') ? 1.5 : 1.0;
-  }
+  // SEE raíz
+  function pieceValue(ch){ if (!ch) return 0; return (ch === 'R' || ch === 'N') ? 1.5 : 1.0; }
   function seeAfterQuietRoot(b, move, who){
     const nb = cloneBoard(b);
     const { from, to } = move;
@@ -115,84 +114,73 @@ export function minimaxChooseBestMove(board, side, depth, helpers, opts = {}) {
     nb[to[0]][to[1]] = piece;
     try { crownIfNeeded(nb, to); } catch {}
     const opp = (who === COLOR.ROJO) ? COLOR.NEGRO : COLOR.ROJO;
-
     const { captures: oppCaps } = genAllMoves(nb, opp);
     if (oppCaps.length === 0) return 0;
-
     for (const cap of oppCaps){
       const path = cap.path;
-      for (let i=0; i<path.length-1; i++){
-        const fr = path[i], tr = path[i+1];
-        const mids = diagPassCells(fr, tr).filter(([r,c]) => nb[r][c] != null);
+      for (let i=0;i<path.length-1;i++){
+        const mids = diagPassCells(path[i], path[i+1]).filter(([r,c]) => nb[r][c] != null);
         if (mids.length === 1){
           const [mr,mc] = mids[0];
-          if (mr === to[0] && mc === to[1]){
-            return -pieceValue(piece);
-          }
+          if (mr === to[0] && mc === to[1]) return -pieceValue(piece);
         }
       }
     }
     return 0;
   }
 
-  // ---------------- Zobrist + TT ----------------
+  // Zobrist / TT
   const PIECES = ['r','R','n','N'];
   const P_INDEX = Object.fromEntries(PIECES.map((p,i)=>[p,i]));
-
   let seed = 0x9E3779B97F4A7C15n;
-  function rnd64(){
-    seed ^= seed >> 12n; seed ^= seed << 25n; seed ^= seed >> 27n;
-    return (seed * 0x2545F4914F6CDD1Dn) & ((1n<<64n)-1n);
-  }
-  const Z = Array.from({length: SIZE}, () =>
-    Array.from({length: SIZE}, () =>
-      Array.from({length: PIECES.length}, () => rnd64())
-    )
-  );
+  function rnd64(){ seed^=seed>>12n; seed^=seed<<25n; seed^=seed>>27n; return (seed*0x2545F4914F6CDD1Dn)&((1n<<64n)-1n); }
+  const Z = Array.from({length: SIZE}, () => Array.from({length: SIZE}, () => Array.from({length: PIECES.length}, () => rnd64())));
   const Z_SIDE = rnd64();
-
-  function hashBoard(b, sideToMove) {
-    let h = 0n;
-    for (let r=0; r<SIZE; r++){
-      for (let c=0; c<SIZE; c++){
-        const ch = b[r][c];
-        if (!ch) continue;
-        const pi = P_INDEX[ch];
-        if (pi == null) continue;
-        h ^= Z[r][c][pi];
-      }
-    }
-    if (sideToMove === COLOR.ROJO) h ^= Z_SIDE;
-    return h;
-  }
-
+  function hashBoard(b, sideToMove){ let h=0n; for(let r=0;r<SIZE;r++){ for(let c=0;c<SIZE;c++){ const ch=b[r][c]; if(!ch)continue; const pi=P_INDEX[ch]; if(pi==null)continue; h^=Z[r][c][pi]; } } if (sideToMove===COLOR.ROJO) h^=Z_SIDE; return h; }
   const TT_FLAG = { EXACT:0, LOWER:1, UPPER:2 };
   const tt = new Map();
-
   function ttGet(keyStr, depthReq, alpha, beta){
-    const e = tt.get(keyStr);
-    if (!e) return null;
+    const e = tt.get(keyStr); if(!e) return null;
     if (e.depth < depthReq) return null;
     if (e.flag === TT_FLAG.EXACT) return e;
     if (e.flag === TT_FLAG.LOWER && e.score >= beta) return e;
     if (e.flag === TT_FLAG.UPPER && e.score <= alpha) return e;
-    return e; // útil para TT-move first
+    return e;
   }
-  function ttStore(keyStr, depthStored, flag, score, move){
-    tt.set(keyStr, { depth: depthStored, flag, score, move });
+  function ttStore(keyStr, depthStored, flag, score, move){ tt.set(keyStr, { depth: depthStored, flag, score, move }); }
+
+  // ---------- Ordenamiento ----------
+  function captureStats(b, m){
+    if (m.type !== 'capture') return { victimSum: 0, attackerVal: 0, promotes: false };
+    let nb = cloneBoard(b);
+    const attacker = nb[m.path[0][0]]?.[m.path[0][1]];
+    const attackerVal = pieceValue(attacker);
+    let victimSum = 0;
+    for (let i=0;i<m.path.length-1;i++){
+      const from = m.path[i], to = m.path[i+1];
+      const mid = findMidOnBoard(nb, from, to, colorOf(attacker));
+      if (mid){
+        const v = nb[mid[0]][mid[1]];
+        victimSum += pieceValue(v);
+      }
+      nb = applySingleCapture(nb, from, to);
+    }
+    const last = m.path[m.path.length-1];
+    const promotes = (() => {
+      const ch = nb[last[0]]?.[last[1]];
+      return ch === 'R' || ch === 'N';
+    })();
+    return { victimSum, attackerVal, promotes };
   }
 
-  // ---------------- Ordenamiento ----------------
   function mvvlvaScore(b, m){
     if (m.type !== 'capture') return 0;
     const fr = m.path[0], tr = m.path[1];
     const mids = diagPassCells(fr, tr);
     const occ = mids.find(([r,c]) => b[r][c] != null);
-    let victim = b[occ?.[0]]?.[occ?.[1]] ?? null;
+    const victim = b[occ?.[0]]?.[occ?.[1]] ?? null;
     const attacker = b[fr[0]][fr[1]];
-    const vVal = pieceValue(victim);
-    const aVal = pieceValue(attacker);
-    return 100 * vVal - aVal;
+    return 100 * pieceValue(victim) - pieceValue(attacker);
   }
 
   function orderMoves(b, who, moves, ttMove){
@@ -204,8 +192,18 @@ export function minimaxChooseBestMove(board, side, depth, helpers, opts = {}) {
     }
     const caps = arr.filter(m => m.type === "capture");
     const quiet = arr.filter(m => m.type === "quiet");
-    if (settings.useMVVLVA) caps.sort((a,b2)=> mvvlvaScore(b, b2) - mvvlvaScore(b, a));
-    // Quiet heuristic: acercarse a coronación
+
+    // Capts: víctima total desc, atacante de mayor valor (Dama) desc, corona primero, fallback MVVLVA
+    caps.sort((a, b2) => {
+      const A = captureStats(b, a);
+      const B = captureStats(b, b2);
+      if (B.victimSum !== A.victimSum) return B.victimSum - A.victimSum;
+      if (B.attackerVal !== A.attackerVal) return B.attackerVal - A.attackerVal; // Dama > peón
+      if (A.promotes !== B.promotes) return (B.promotes ? 1 : 0) - (A.promotes ? 1 : 0);
+      return mvvlvaScore(b, b2) - mvvlvaScore(b, a);
+    });
+
+    // Quiet: acercarse a coronación
     quiet.sort((a, b2) => {
       const red = (who === COLOR.ROJO);
       const aRow = a.to[0], bRow = b2.to[0];
@@ -213,16 +211,15 @@ export function minimaxChooseBestMove(board, side, depth, helpers, opts = {}) {
       const bScore = red ? (SIZE - 1 - bRow) : bRow;
       return bScore - aScore;
     });
+
     return caps.concat(quiet);
   }
 
   function isSameMove(a, b){
     if (!a || !b) return false;
     if (a.type !== b.type) return false;
-    if (a.type === 'quiet'){
-      return a.from[0]===b.from[0] && a.from[1]===b.from[1] &&
-             a.to[0]===b.to[0] && a.to[1]===b.to[1];
-    }
+    if (a.type === 'quiet')
+      return a.from[0]===b.from[0] && a.from[1]===b.from[1] && a.to[0]===b.to[0] && a.to[1]===b.to[1];
     const pa = a.path || [], pb = b.path || [];
     if (pa.length !== pb.length) return false;
     for (let i=0;i<pa.length;i++){
@@ -230,11 +227,13 @@ export function minimaxChooseBestMove(board, side, depth, helpers, opts = {}) {
     }
     return true;
   }
+  const opponent = (s) => (s === COLOR.ROJO ? COLOR.NEGRO : COLOR.ROJO);
 
-  function opponent(s){ return s === COLOR.ROJO ? COLOR.NEGRO : COLOR.ROJO; }
-
-  // ---------------- Minimax con "captura obligatoria" en todos los niveles ----------------
+  // ---------- Núcleo Minimax (captura obligatoria en todos los niveles) ----------
   function minimax(b, who, d, alpha, beta, maximizing, inQuiescence = false){
+    if (timeUp()) return { score: evaluate(b, me, { COLOR, SIZE, colorOf, movimientos }), move: null };
+    if (++nodes > settings.nodeBudget) return { score: evaluate(b, me, { COLOR, SIZE, colorOf, movimientos }), move: null };
+
     const key = (settings.useTT ? (hashBoard(b, who).toString()) : null);
     const ttCand = (settings.useTT && key) ? ttGet(key, d, alpha, beta) : null;
     if (ttCand && ttCand.depth >= d && ttCand.move && ttCand.flag === 0){
@@ -243,12 +242,13 @@ export function minimaxChooseBestMove(board, side, depth, helpers, opts = {}) {
 
     const all = genAllMoves(b, who);
     const hasCaps = all.captures.length > 0;
+    const legal = hasCaps ? all.captures : all.captures.concat(all.quiet);
 
     const atHorizon = d === 0;
     if (atHorizon){
       if (settings.quiescence && hasCaps && !inQuiescence){
-        // Extensión de quiescencia: solo capturas si hay
-        return minimaxInner(b, who, 1, alpha, beta, maximizing, true, /*forceCapturesOnly*/true);
+        const onlyCaps = orderMoves(b, who, legal.filter(m=>m.type==="capture"));
+        return minimaxInner(b, who, 1, alpha, beta, maximizing, true, true, onlyCaps, key);
       }
       const score = evaluate(b, me, { COLOR, SIZE, colorOf, movimientos });
       const res = { score, move:null };
@@ -256,32 +256,12 @@ export function minimaxChooseBestMove(board, side, depth, helpers, opts = {}) {
       return res;
     }
 
-    if (!hasCaps && all.quiet.length===0){
-      const score = evaluate(b, me, { COLOR, SIZE, colorOf, movimientos });
-      const res = { score, move:null };
-      if (settings.useTT && key) ttStore(key, d, TT_FLAG.EXACT, score, null);
-      return res;
-    }
-
-    // ***CAPTURA OBLIGATORIA***: si existen capturas, descartamos quiet en este nodo
-    const legalMoves = hasCaps ? all.captures : all.captures.concat(all.quiet);
-
-    const ttMove = (ttCand && ttCand.move) ? ttCand.move : null;
-    const ordered = orderMoves(b, who, legalMoves, ttMove);
-
-    return minimaxInner(b, who, d, alpha, beta, maximizing, inQuiescence, /*forceCapturesOnly*/hasCaps, ordered, key);
+    const ordered = orderMoves(b, who, legal, ttCand?.move);
+    return minimaxInner(b, who, d, alpha, beta, maximizing, inQuiescence, hasCaps, ordered, key);
   }
 
-  function minimaxInner(b, who, d, alpha, beta, maximizing, inQuiescence, forceCapturesOnly, preMoves, parentKeyStr){
-    let moves = preMoves;
-    if (!moves){
-      const all = genAllMoves(b, who);
-      const onlyCaps = forceCapturesOnly || all.captures.length > 0; // **enforzar**
-      moves = orderMoves(b, who, onlyCaps ? all.captures : all.captures.concat(all.quiet));
-    } else if (forceCapturesOnly){
-      moves = moves.filter(m => m.type === "capture");
-    }
-
+  function minimaxInner(b, who, d, alpha, beta, maximizing, inQuiescence, hasCapsHere, preMoves, parentKeyStr){
+    let moves = hasCapsHere ? preMoves.filter(m => m.type === "capture") : preMoves;
     if (moves.length === 0){
       const score = evaluate(b, me, { COLOR, SIZE, colorOf, movimientos });
       return { score, move:null };
@@ -294,10 +274,13 @@ export function minimaxChooseBestMove(board, side, depth, helpers, opts = {}) {
     if (maximizing){
       let best = -INF;
       for (const m of moves){
+        if (timeUp() || nodes > settings.nodeBudget) break;
+
         const nb = (m.type === "capture")
           ? applyCapturePath(b, m.path)
           : (() => { const tmp = cloneBoard(b); const res = aplicarMovimiento(tmp, { from:m.from, to:m.to }); try{ crownIfNeeded(res, m.to);}catch{}; return res; })();
-        const { score } = minimax(nb, opponent(who), d-1, localAlpha, localBeta, false, inQuiescence);
+
+        const { score } = minimax(nb, opponent(who), d-1, localAlpha, localBeta, false, inQuiescence || m.type==="capture");
         if (score > best){ best = score; bestMove = m; }
         if (best > localAlpha) localAlpha = best;
         if (localBeta <= localAlpha) break;
@@ -312,10 +295,13 @@ export function minimaxChooseBestMove(board, side, depth, helpers, opts = {}) {
     } else {
       let best = INF;
       for (const m of moves){
+        if (timeUp() || nodes > settings.nodeBudget) break;
+
         const nb = (m.type === "capture")
           ? applyCapturePath(b, m.path)
           : (() => { const tmp = cloneBoard(b); const res = aplicarMovimiento(tmp, { from:m.from, to:m.to }); try{ crownIfNeeded(res, m.to);}catch{}; return res; })();
-        const { score } = minimax(nb, opponent(who), d-1, localAlpha, localBeta, true, inQuiescence);
+
+        const { score } = minimax(nb, opponent(who), d-1, localAlpha, localBeta, true, inQuiescence || m.type==="capture");
         if (score < best){ best = score; bestMove = m; }
         if (best < localBeta) localBeta = best;
         if (localBeta <= localAlpha) break;
@@ -330,68 +316,90 @@ export function minimaxChooseBestMove(board, side, depth, helpers, opts = {}) {
     }
   }
 
-  // ---------------- Raíz: SEE + Iterative Deepening ----------------
-  const start = Date.now();
-  const timeoutAt = start + settings.timeMs;
-  const timeUp = () => Date.now() >= timeoutAt;
-
+  // ---------- PREFILTRO ESTRICTO en RAÍZ ----------
   const rootAll = genAllMoves(board, side);
   const rootHasCaps = rootAll.captures.length > 0;
+  if (!rootHasCaps && rootAll.quiet.length === 0) return null;
 
-  let rootMoves = settings.rootCaptureOnly && rootHasCaps
-    ? rootAll.captures
-    : rootAll.captures.concat(rootAll.quiet);
+  let rootMoves = rootHasCaps ? rootAll.captures : rootAll.captures.concat(rootAll.quiet);
+  if (rootHasCaps) {
+    // 1) Solo capturas con máximo valor de víctimas
+    let maxVict = -Infinity;
+    const withStats = rootMoves.map(m => {
+      const s = captureStats(board, m);
+      if (s.victimSum > maxVict) maxVict = s.victimSum;
+      return { m, s };
+    }).filter(x => x.s.victimSum === maxVict);
 
-  if (rootMoves.length === 0) return null;
+    // 2) Si hay al menos una con atacante Dama, quedarse solo con esas
+    const anyQueen = withStats.some(x => x.s.attackerVal > 1.0); // Dama = 1.5
+    let filtered = anyQueen ? withStats.filter(x => x.s.attackerVal > 1.0) : withStats;
 
+    // 3) Si hay varias y alguna corona, quedarse con las que coronan
+    const anyProm = filtered.some(x => x.s.promotes);
+    if (anyProm) filtered = filtered.filter(x => x.s.promotes);
+
+    rootMoves = filtered.map(x => x.m);
+  }
+
+  // SEE en raíz solo si no hay capturas
   if (settings.useSEE && !rootHasCaps){
-    const safe = [], risky = [];
+    const safe = [];
     for (const m of rootMoves){
       if (m.type === "quiet"){
         const see = seeAfterQuietRoot(board, m, side);
-        if (see < settings.seePenaltyMargin) risky.push(m);
-        else safe.push(m);
-      } else {
-        safe.push(m);
-      }
+        if (see >= settings.seePenaltyMargin) safe.push(m);
+      } else safe.push(m);
     }
-    rootMoves = safe.length ? safe : rootMoves;
+    if (safe.length) rootMoves = safe;
   }
 
   rootMoves = orderMoves(board, side, rootMoves, null);
+  if (rootMoves.length === 0) return null;
 
+  // Iterative deepening
   let bestGlobal = null;
   let bestScoreGlobal = -INF;
-
   for (let d = Math.min(2, settings.maxDepth); d <= settings.maxDepth; d++){
     if (timeUp()) break;
 
-    let alphaGlobal = -INF, betaGlobal = INF;
-    let bestThisIter = null;
-    let bestScoreThisIter = -INF;
+    let alphaG = -INF, betaG = INF;
+    let iterBest = null, iterScore = -INF;
 
-    const iterMoves = rootMoves.slice();
-
-    for (const m of iterMoves){
+    for (const m of rootMoves){
       if (timeUp()) break;
 
       const nb = (m.type === "capture")
         ? applyCapturePath(board, m.path)
         : (() => { const tmp = cloneBoard(board); const res = aplicarMovimiento(tmp, { from:m.from, to:m.to }); try{ crownIfNeeded(res, m.to);}catch{}; return res; })();
 
-      const { score } = minimax(nb, opponent(side), d-1, alphaGlobal, betaGlobal, false, false);
-      if (score > bestScoreThisIter){ bestScoreThisIter = score; bestThisIter = m; }
-      if (bestScoreThisIter > alphaGlobal) alphaGlobal = bestScoreThisIter;
-      if (betaGlobal <= alphaGlobal) break;
+      const { score } = minimax(nb, (side === COLOR.ROJO ? COLOR.NEGRO : COLOR.ROJO), d-1, alphaG, betaG, false, false);
+      if (score > iterScore){ iterScore = score; iterBest = m; }
+      if (iterScore > alphaG) alphaG = iterScore;
+      if (betaG <= alphaG) break;
     }
 
-    if (bestThisIter){
-      bestGlobal = bestThisIter;
-      bestScoreGlobal = bestScoreThisIter;
-      const idx = rootMoves.findIndex(m => isSameMove(m, bestThisIter));
+    if (iterBest){
+      bestGlobal = iterBest;
+      bestScoreGlobal = iterScore;
+      const idx = rootMoves.findIndex(m => isSameMove(m, iterBest));
       if (idx > 0){ const [mv] = rootMoves.splice(idx,1); rootMoves.unshift(mv); }
     }
   }
 
   return bestGlobal;
+
+  // helper
+  function isSameMove(a, b){
+    if (!a || !b) return false;
+    if (a.type !== b.type) return false;
+    if (a.type === 'quiet')
+      return a.from[0]===b.from[0] && a.from[1]===b.from[1] && a.to[0]===b.to[0] && a.to[1]===b.to[1];
+    const pa = a.path || [], pb = b.path || [];
+    if (pa.length !== pb.length) return false;
+    for (let i=0;i<pa.length;i++){
+      if (pa[i][0]!==pb[i][0] || pa[i][1]!==pb[i][1]) return false;
+    }
+    return true;
+  }
 }

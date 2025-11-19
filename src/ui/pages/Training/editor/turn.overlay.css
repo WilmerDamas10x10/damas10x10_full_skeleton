@@ -1,0 +1,67 @@
+/* src/ui/pages/Training/editor/turn.overlay.css
+   Señal sutil del color en turno (sin textos/toasts) */
+
+/* Ajustes suaves (puedes bajarlos aún más si lo quieres más discreto) */
+:root{
+  --turn-boost: 1.08;           /* brillo */
+  --turn-sat: 1.12;             /* saturación */
+  --turn-glow: rgba(255,255,255,.28);
+  --turn-glow-dark: rgba(0,0,0,.24);
+}
+
+/* Todas las piezas transicionan suave */
+#board .piece{
+  position: relative;           /* para el ::after */
+  transition: filter .25s ease, box-shadow .25s ease, opacity .25s ease;
+}
+
+/* ===== BLANCAS en turno ===== */
+[data-page="editor"][data-turn="white"] #board [data-color="white"] > .piece,
+[data-page="editor"][data-turn="white"] #board .piece.white,
+[data-page="editor"][data-turn="white"] #board [data-piece="W"]{
+  /* Evita que otros CSS apaguen el efecto */
+  filter: brightness(var(--turn-boost)) saturate(var(--turn-sat)) !important;
+  /* Si algún CSS mete box-shadow: none !important; lo sorteamos con ::after */
+}
+
+/* Anillo suave por ::after para no depender de box-shadow de la pieza */
+[data-page="editor"][data-turn="white"] #board [data-color="white"] > .piece::after,
+[data-page="editor"][data-turn="white"] #board .piece.white::after,
+[data-page="editor"][data-turn="white"] #board [data-piece="W"]::after{
+  content: "";
+  position: absolute; inset: -2px;
+  border-radius: 999px;
+  pointer-events: none;
+  box-shadow: 0 0 10px var(--turn-glow), 0 0 2px var(--turn-glow);
+  opacity: .9;
+}
+
+/* ===== NEGRAS en turno (por si luego también las marcas) ===== */
+[data-page="editor"][data-turn="black"] #board [data-color="black"] > .piece,
+[data-page="editor"][data-turn="black"] #board .piece.black,
+[data-page="editor"][data-turn="black"] #board [data-piece="B"]{
+  filter: brightness(var(--turn-boost)) saturate(var(--turn-sat)) !important;
+}
+[data-page="editor"][data-turn="black"] #board [data-color="black"] > .piece::after,
+[data-page="editor"][data-turn="black"] #board .piece.black::after,
+[data-page="editor"][data-turn="black"] #board [data-piece="B"]::after{
+  content: "";
+  position: absolute; inset: -2px;
+  border-radius: 999px;
+  pointer-events: none;
+  box-shadow: 0 0 10px var(--turn-glow-dark), 0 0 2px var(--turn-glow-dark);
+  opacity: .9;
+}
+
+/* “Respiración” sutil al cambiar turno (solo 1 vez por cambio) */
+@keyframes breathe-turn {
+  0%   { opacity: .6; transform: scale(0.985); }
+  40%  { opacity: 1;  transform: scale(1.00); }
+  100% { opacity: .9; transform: scale(1.00); }
+}
+
+/* Dispara la animación en las fichas del color en turno */
+[data-page="editor"].turn-kick[data-turn="white"] #board [data-color="white"] > .piece::after,
+[data-page="editor"].turn-kick[data-turn="black"] #board [data-color="black"] > .piece::after{
+  animation: breathe-turn 1200ms ease-out 0s 1 both;
+}

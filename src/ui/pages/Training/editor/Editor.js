@@ -1,4 +1,3 @@
-// src/ui/pages/Training/editor/Editor.js
 import { navigate } from "@router";
 import { saveLocalAutoFrom } from "./services/snapshot.js";
 import "./editor.responsive.css";
@@ -99,14 +98,21 @@ function placeSfxToggleInRightPanel(container) {
   let btn = container.querySelector("#btn-sfx-toggle");
   const getOn = () => !!(window.__sfxEnabled ?? true);
   const label = (on) => on ? "🔊 Sonido ON" : "🔇 Sonido OFF";
-  const update = (on) => { btn.setAttribute("aria-pressed", on ? "true" : "false"); btn.textContent = label(on); btn.title = "Alt+S • alternar sonido"; btn.classList.add("btn"); };
+  const update = (on) => {
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.textContent = label(on);
+    btn.title = "Alt+S • alternar sonido";
+    btn.classList.add("btn");
+  };
 
   if (!btn) {
     btn = document.createElement("button");
     btn.id = "btn-sfx-toggle";
     btn.type = "button";
     btn.addEventListener("click", () => { try { window.__toggleSfx?.(); } catch {} update(getOn()); });
-    (menuBtn && menuBtn.parentElement === parent) ? menuBtn.insertAdjacentElement("afterend", btn) : parent.appendChild(btn);
+    (menuBtn && menuBtn.parentElement === parent)
+      ? menuBtn.insertAdjacentElement("afterend", btn)
+      : parent.appendChild(btn);
   }
   update(getOn());
   window.addEventListener("sfx:toggle", (e) => update(!!(e?.detail?.on ?? window.__sfxEnabled)));
@@ -115,29 +121,52 @@ function placeSfxToggleInRightPanel(container) {
 /* ---------- FX helpers ---------- */
 function flashCaptureBoard(boardEl){
   if(!FX_VIS_ON) return;
-  try{ const fx=boardEl?.querySelector(".fx-overlay"); if(!fx) return;
-    fx.classList.remove("fx-capture"); fx.offsetWidth; fx.classList.add("fx-capture");
+  try{
+    const fx=boardEl?.querySelector(".fx-overlay"); if(!fx) return;
+    fx.classList.remove("fx-capture"); fx.offsetWidth;
+    fx.classList.add("fx-capture");
     setTimeout(()=>fx.classList.remove("fx-capture"),260);
   }catch{}
 }
 function pulseMoveBoard(boardEl){
   if(!FX_VIS_ON) return;
-  try{ const fx=boardEl?.querySelector(".fx-overlay"); if(!fx) return;
-    fx.classList.remove("fx-move"); fx.offsetWidth; fx.classList.add("fx-move");
+  try{
+    const fx=boardEl?.querySelector(".fx-overlay"); if(!fx) return;
+    fx.classList.remove("fx-move"); fx.offsetWidth;
+    fx.classList.add("fx-move");
     setTimeout(()=>fx.classList.remove("fx-move"),180);
   }catch{}
 }
 function makeApplySingleCaptureWithSfx(fn, boardEl) {
-  return (...a) => { const out = fn(...a); try { flashCaptureBoard(boardEl); } catch {} return out; };
+  return (...a) => {
+    const out = fn(...a);
+    try { flashCaptureBoard(boardEl); } catch {}
+    return out;
+  };
 }
 function countPiecesSafe(b){
-  let n=0; try{ for(const row of (b||[])){ if(!row) continue; for(const cell of row){ if(cell==null) continue; try{ if(isGhost&&isGhost(cell)) continue; }catch{}; n++; } } }catch{}; return n;
+  let n=0;
+  try{
+    for(const row of (b||[])){
+      if(!row) continue;
+      for(const cell of row){
+        if(cell==null) continue;
+        try{ if(isGhost && isGhost(cell)) continue; }catch{};
+        n++;
+      }
+    }
+  }catch{};
+  return n;
 }
 function makeSetBoardWithFX(boardEl, ref) {
   return (newBoard) => {
     const pc = countPiecesSafe(ref.current), nc = countPiecesSafe(newBoard);
     ref.current = newBoard;
-    try { (Number.isFinite(pc)&&Number.isFinite(nc)&&nc<pc) ? flashCaptureBoard(boardEl) : pulseMoveBoard(boardEl); } catch {}
+    try {
+      (Number.isFinite(pc)&&Number.isFinite(nc)&&nc<pc)
+        ? flashCaptureBoard(boardEl)
+        : pulseMoveBoard(boardEl);
+    } catch {}
     // 🆕 Notificar “cambió el estado del editor” (el emisor real se define dentro de TrainingEditor)
     try { window.__editorBroadcastState?.(); } catch {}
   };
@@ -181,7 +210,9 @@ let __applyingRemoteFx = false;
 function wrapSfxForWAN(sfxObj, ws){
   const NAMES = ["move", "capture", "promote", "invalid"];
   const orig = {};
-  for(const n of NAMES){ orig[n] = typeof sfxObj[n] === "function" ? sfxObj[n].bind(sfxObj) : () => {}; }
+  for(const n of NAMES){
+    orig[n] = typeof sfxObj[n] === "function" ? sfxObj[n].bind(sfxObj) : () => {};
+  }
 
   for(const n of NAMES){
     sfxObj[n] = (...args) => {
@@ -191,7 +222,9 @@ function wrapSfxForWAN(sfxObj, ws){
       if (__applyingRemoteFx) return;
       // 3) si no hay WS o no está OPEN -> salir
       try {
-        const connected = (typeof ws?.isConnected === "function" ? ws.isConnected() : !!ws?.isOpen?.());
+        const connected = (typeof ws?.isConnected === "function"
+          ? ws.isConnected()
+          : !!ws?.isOpen?.());
         if (!connected) return;
         ws.safeSend?.({ v:1, t:"uifx", op:"sfx", payload:{ name:n } });
       } catch {}
@@ -200,7 +233,9 @@ function wrapSfxForWAN(sfxObj, ws){
 }
 
 function playRemoteSfx(name, sfxObj){
-  const fn = typeof sfxObj?.[name] === "function" ? sfxObj[name].bind(sfxObj) : null;
+  const fn = typeof sfxObj?.[name] === "function"
+    ? sfxObj[name].bind(sfxObj)
+    : null;
   if (!fn) return;
   const prev = __applyingRemoteFx;
   __applyingRemoteFx = true;
@@ -216,19 +251,46 @@ async function downloadFen({ board, turn }) {
     const enc=mod.toFEN||mod.boardToFEN||mod.encodeFEN||mod.exportFEN||mod.default;
     if(typeof enc!=="function") throw new Error("No exportador FEN");
     const fen=enc(board,turn); if(!fen||typeof fen!=="string") throw new Error("FEN inválido");
-    const ts=new Date().toISOString().replace(/[:.]/g,"-"); const filename=`pos_${ts}.fen`;
-    const blob=new Blob([fen],{type:"text/plain;charset=utf-8"}); const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
-    result.ok=true; result.filename=filename; return result;
+    const ts=new Date().toISOString().replace(/[:.]/g,"-");
+    const filename=`pos_${ts}.fen`;
+    const blob=new Blob([fen],{type:"text/plain;charset=utf-8"});
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download=filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+    result.ok=true;
+    result.filename=filename;
+    return result;
   }catch(e){
     console.error("[FEN] principal]:",e);
     try{
-      const ts=new Date().toISOString().replace(/[:.]/g,"-"); const filename=`pos_${ts}.fen`;
-      const snap={board,turn}; const blob=new Blob([JSON.stringify(snap)],{type:"application/json"});
-      const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
-      result.ok=true; result.filename=filename; result.reason="fallback"; return result;
-    }catch(ee){ console.error("[FEN] fallback]:",ee); result.ok=false; result.reason="fatal"; return result; }
+      const ts=new Date().toISOString().replace(/[:.]/g,"-");
+      const filename=`pos_${ts}.fen`;
+      const snap={board,turn};
+      const blob=new Blob([JSON.stringify(snap)],{type:"application/json"});
+      const a=document.createElement("a");
+      a.href=URL.createObjectURL(blob);
+      a.download=filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
+      result.ok=true;
+      result.filename=filename;
+      result.reason="fallback";
+      return result;
+    }catch(ee){
+      console.error("[FEN] fallback]:",ee);
+      result.ok=false;
+      result.reason="fatal";
+      return result;
+    }
   }
 }
+
 async function copyFenToClipboard({ board, turn }) {
   try{
     const mod=await import("./services/fen.js");
@@ -243,9 +305,12 @@ async function copyFenToClipboard({ board, turn }) {
     }
     // Fallback: execCommand dentro del gesto de usuario
     const ta=document.createElement("textarea");
-    ta.value=fen; ta.setAttribute("readonly","");
-    ta.style.position="fixed"; ta.style.left="-9999px";
-    document.body.appendChild(ta); ta.select();
+    ta.value=fen;
+    ta.setAttribute("readonly","");
+    ta.style.position="fixed";
+    ta.style.left="-9999px";
+    document.body.appendChild(ta);
+    ta.select();
     const ok=document.execCommand("copy");
     ta.remove();
     if(!ok) throw new Error("execCommand(copy) falló");
@@ -259,10 +324,16 @@ async function copyFenToClipboard({ board, turn }) {
 /* ---- Forzar repintado si el layout tarda y el board queda “vacío” ---- */
 function ensureBoardVisible(container, board) {
   try {
-    const boardEl = container.querySelector("#board"); if (!boardEl) return;
-    boardEl.style.visibility = "visible"; boardEl.style.opacity = "1"; boardEl.style.removeProperty("display");
+    const boardEl = container.querySelector("#board");
+    if (!boardEl) return;
+    boardEl.style.visibility = "visible";
+    boardEl.style.opacity = "1";
+    boardEl.style.removeProperty("display");
     const hasGfx = boardEl.querySelector("canvas,svg");
-    if (!hasGfx) { try { drawBoard(boardEl, board, SIZE, dark); } catch { try { drawBoard(boardEl, board, dark); } catch {} } }
+    if (!hasGfx) {
+      try { drawBoard(boardEl, board, SIZE, dark); }
+      catch { try { drawBoard(boardEl, board, dark); } catch {} }
+    }
   } catch {}
 }
 
@@ -274,6 +345,16 @@ export default function TrainingEditor(container) {
   let turn = COLOR.ROJO;
   let placing = null;
   let stepState = null;
+
+  // 🧩 Exponer API mínima para que el halo de turno lea el turno real del Editor
+  try {
+    const g = (window.__D10 = window.__D10 || {});
+    g.get = () => ({
+      // El halo interpreta "ROJO"/"R"/"WHITE"/"W" como BLANCAS
+      // y "NEGRO"/"N"/"BLACK"/"B" como NEGRAS.
+      turn: (turn === COLOR.ROJO ? "ROJO" : "NEGRO"),
+    });
+  } catch {}
 
   // 🔁 Emisión automática con debounce + guardia anti-eco
   let applyingRemote = false;   // evita re-emitir lo que viene por WS
@@ -344,7 +425,10 @@ export default function TrainingEditor(container) {
   // Quitar selector de Variante si el template lo trae
   try {
     const sel = container.querySelector("#variantSelect");
-    if (sel) { container.querySelector("label[for='variantSelect']")?.remove(); sel.remove(); }
+    if (sel) {
+      container.querySelector("label[for='variantSelect']")?.remove();
+      sel.remove();
+    }
   } catch {}
 
   installVariantHints(container);
@@ -370,38 +454,60 @@ export default function TrainingEditor(container) {
   const dbgEl   = SHOW_DEBUG ? container.querySelector("#dbg") : null;
 
   let fxOverlay = boardEl?.querySelector(".fx-overlay");
-  if (!fxOverlay && boardEl) { fxOverlay = document.createElement("div"); fxOverlay.className = "fx-overlay"; boardEl.appendChild(fxOverlay); }
+  if (!fxOverlay && boardEl) {
+    fxOverlay = document.createElement("div");
+    fxOverlay.className = "fx-overlay";
+    boardEl.appendChild(fxOverlay);
+  }
 
   const boardRef = { current: board };
   const setBoardFX = makeSetBoardWithFX(boardEl, boardRef);
 
-  function setChainFlag(flag){ if(!boardEl)return; flag ? boardEl.setAttribute("data-chain","1") : boardEl.removeAttribute("data-chain"); }
+  function setChainFlag(flag){
+    if(!boardEl) return;
+    flag ? boardEl.setAttribute("data-chain","1") : boardEl.removeAttribute("data-chain");
+  }
 
   const applySnapshot = (snap) => {
     if (!snap || !Array.isArray(snap.board)) return;
     saveLocalAutoFrom(snap.board, snap.turn);
     board = snap.board; turn = snap.turn;
-    try { drawBoard(boardEl, board, SIZE, dark); } catch { try { drawBoard(boardEl, board, dark); } catch {} }
+    try { drawBoard(boardEl, board, SIZE, dark); }
+    catch { try { drawBoard(boardEl, board, dark); } catch {} }
     try { typeof clearHints === "function" && clearHints(boardEl); } catch {}
     try { updateTurnUI(container, turn); } catch {}
     try { boardEl?.removeAttribute("data-locked"); } catch {}
     try { boardEl?.removeAttribute("data-chain"); } catch {}
     try { clearSelectedGlowRemote(boardEl); } catch {}
-    stepState = null; setChainFlag(false); placing = null;
+    stepState = null;
+    setChainFlag(false);
+    placing = null;
     try { syncToolButtons?.(container, placing); } catch {}
     try {
       queueMicrotask(() => {
-        const prev = turn; const other = (prev === COLOR.ROJO ? COLOR.NEGRO : COLOR.ROJO);
+        const prev = turn;
+        const other = (prev === COLOR.ROJO ? COLOR.NEGRO : COLOR.ROJO);
         if (typeof switchTurnUI === "function") {
           switchTurnUI();
-          queueMicrotask(() => { switchTurnUI(); try { render(); } catch {} try { paintState(); } catch {} });
+          queueMicrotask(() => {
+            switchTurnUI();
+            try { render(); } catch {}
+            try { paintState(); } catch {}
+          });
         } else {
-          turn = other; updateTurnUI(container, turn);
-          queueMicrotask(() => { turn = prev; updateTurnUI(container, turn); try { render(); } catch {} try { paintState(); } catch {} });
+          turn = other;
+          updateTurnUI(container, turn);
+          queueMicrotask(() => {
+            turn = prev;
+            updateTurnUI(container, turn);
+            try { render(); } catch {}
+            try { paintState(); } catch {}
+          });
         }
       });
     } catch {}
-    try { drawBoard(boardEl, board, SIZE, dark); } catch { try { drawBoard(boardEl, board, dark); } catch {} }
+    try { drawBoard(boardEl, board, SIZE, dark); }
+    catch { try { drawBoard(boardEl, board, dark); } catch {} }
     try { updateTurnUI(container, turn); } catch {}
     queueMicrotask(() => {
       try { typeof repaintOverlays === "function" && repaintOverlays(); } catch {}
@@ -422,27 +528,45 @@ export default function TrainingEditor(container) {
   try { container.querySelector("#btn-pruebas-dev")?.remove(); } catch {}
 
   const verifyBtn = container.querySelector("#btn-verificar");
-  const clearOV2Layer = () => { const layer = boardEl?.querySelector(".ov2-layer"); if (layer) layer.innerHTML = ""; };
-  const syncVerifyLabel = () => { try { if (verifyBtn) verifyBtn.textContent = "Ver capturas"; } catch {} };
+  const clearOV2Layer = () => {
+    const layer = boardEl?.querySelector(".ov2-layer");
+    if (layer) layer.innerHTML = "";
+  };
+  const syncVerifyLabel = () => {
+    try { if (verifyBtn) verifyBtn.textContent = "Ver capturas"; } catch {}
+  };
   syncVerifyLabel();
 
-  const repaintOverlays = (() => { let rafId = 0; return () => {
-    const layer = document.querySelector("#board .ov2-layer"); if (!layer) return;
-    if (rafId) cancelAnimationFrame(rafId);
-    rafId = requestAnimationFrame(() => { rafId = 0; });
-  }; })();
+  const repaintOverlays = (() => {
+    let rafId = 0;
+    return () => {
+      const layer = document.querySelector("#board .ov2-layer");
+      if (!layer) return;
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => { rafId = 0; });
+    };
+  })();
 
   try {
     if (boardEl.__ov2RO) { try { boardEl.__ov2RO.disconnect(); } catch {} }
     let rafId = 0;
     const ro = new ResizeObserver(() => {
       if (rafId) cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(() => { rafId = 0; repaintOverlays(); });
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
+        repaintOverlays();
+      });
     });
-    ro.observe(boardEl); boardEl.__ov2RO = ro;
+    ro.observe(boardEl);
+    boardEl.__ov2RO = ro;
   } catch {}
 
-  const render = () => { if (!boardEl) return; drawBoard(boardEl, board, SIZE, dark); setEditingFlag(boardEl, placing); repaintOverlays(); };
+  const render = () => {
+    if (!boardEl) return;
+    drawBoard(boardEl, board, SIZE, dark);
+    setEditingFlag(boardEl, placing);
+    repaintOverlays();
+  };
 
   function paintState() {
     paintView({
@@ -452,33 +576,115 @@ export default function TrainingEditor(container) {
       setStepState: (ss) => { stepState = ss; setChainFlag(!!ss); repaintOverlays(); },
       container, dbgEl, showDebug: SHOW_DEBUG
     });
-    setTurnTextUI(); repaintOverlays();
+    setTurnTextUI();
+    repaintOverlays();
+  }
+
+  // 🔁 Reajustar layout y tablero al cambiar tamaño/zoom de ventana
+  const handleResize = (() => {
+    let rafId = 0;
+    return () => {
+      if (!boardEl) return;
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
+
+        // 🧹 FIX: si estamos en escritorio ancho (>= 1200px),
+        // limpiamos el layout especial de iPad para que
+        // el editor vuelva a su distribución normal.
+        try {
+          const w = window.innerWidth || document.documentElement.clientWidth || 0;
+          if (w >= 1200) {
+            // 1) Limpiar el flag de "ya apliqué top controls"
+            const row =
+              document.querySelector("#board-row") ||
+              document.querySelector(".board-row") ||
+              document.querySelector(".editor-layout");
+
+            if (row) {
+              row.__topControlsApplied = false;
+              // Quitamos sólo los estilos que fuerza el fix de iPad
+              row.style.removeProperty("display");
+              row.style.removeProperty("flex-direction");
+              row.style.removeProperty("align-items");
+              row.style.removeProperty("justify-content");
+              row.style.removeProperty("gap");
+              row.style.removeProperty("padding");
+            }
+
+            // 2) Devolver los botones al flujo normal (quitar el grid temporal)
+            document
+              .querySelectorAll(".top-controls-grid[data-made-by='ipad-fix']")
+              .forEach(grid => {
+                const parent = grid.parentElement;
+                if (!parent) return;
+                while (grid.firstChild) {
+                  parent.insertBefore(grid.firstChild, grid);
+                }
+                grid.remove();
+              });
+          }
+        } catch {
+          // Si algo falla, no rompemos el render
+        }
+
+        // Layout normal del editor
+        try { applyEditorLayout(container); } catch {}
+        try { ensureBoardVisible(container, board); } catch {}
+        try { render(); } catch {}
+        try { paintState(); } catch {}
+        try { syncToolButtons(container, placing); } catch {}
+      });
+    };
+  })();
+
+  // 🆕 Reajuste de layout al cambiar tamaño/zoom de ventana SIN recargar la página
+  // Antes: se detectaba cambio en window.devicePixelRatio y se hacía location.reload(),
+  // lo que en modo SPA hacía que el editor vuelva al menú principal.
+  // Ahora solo reajustamos el layout para que el usuario pueda hacer zoom libremente.
+  if (typeof window !== "undefined") {
+    window.addEventListener("resize", () => {
+      handleResize();
+    });
   }
 
   const undo = setupUndo(container, {
     getBoard: () => board, setBoard: (b) => setBoardLocal(b, "undo"),
     getTurn:  () => turn,  setTurn:  (t) => setTurnLocal(t, "undo"),
-    render, paintState,
-    afterApply: () => { stepState = null; setChainFlag(false); setTurnTextUI(); },
+    render,
+    paintState,
+    afterApply: () => {
+      stepState = null;
+      setChainFlag(false);
+      setTurnTextUI();
+    },
   });
   const saveForUndo  = () => undo.save();
 
   const { controller: HINTS_FOR_CONTROLLER, interactions: HINTS_FOR_INTERACTIONS } = buildHints({
-    useOV2: USE_OV2, clearHints, clearVerification,
-    markRouteLabel: undefined, markStep: undefined,
-    showFirstStepOptions, hintMove,
+    useOV2: USE_OV2,
+    clearHints,
+    clearVerification,
+    markRouteLabel: undefined,
+    markStep: undefined,
+    showFirstStepOptions,
+    hintMove,
   });
 
   const { switchTurn, continueOrEndChain } = makeController({
     container,
-    getBoard: () => board, setBoard: (b) => setBoardLocal(b, "controller"),
-    getTurn:  () => turn,  setTurn:  (t) => setTurnLocal(t, "controller"),
+    getBoard: () => board,
+    setBoard: (b) => setBoardLocal(b, "controller"),
+    getTurn:  () => turn,
+    setTurn:  (t) => setTurnLocal(t, "controller"),
     getStepState: () => stepState,
     setStepState: (s) => { stepState = s; setChainFlag(!!s); repaintOverlays(); },
-    render, paintState,
+    render,
+    paintState,
     deps: { movimientos },
     hints: HINTS_FOR_CONTROLLER,
   });
+
   const switchTurnUI = () => {
     try { clearSelectedGlowRemote(boardEl); } catch {}
     switchTurn();
@@ -493,14 +699,25 @@ export default function TrainingEditor(container) {
   }
 
   container.querySelector("#btn-cambiar-turno")?.addEventListener("click", () => {
-    setPlacing(null); stepState = null; setChainFlag(false);
-    switchTurnUI(); render(); paintState();
+    setPlacing(null);
+    stepState = null;
+    setChainFlag(false);
+    switchTurnUI();
+    render();
+    paintState();
     broadcastSoon("switch-turn");
   });
 
   container.querySelector("#btn-download-fen")?.addEventListener("click", async () => {
     const res = await downloadFen({ board, turn });
-    toast(res?.ok ? (res.reason === "fallback" ? "Descargado (.fen con snapshot JSON)" : "Descargado (.fen)") : "No se pudo exportar la posición. Revisa la consola.", res?.ok ? 2600 : 2800);
+    toast(
+      res?.ok
+        ? (res.reason === "fallback"
+            ? "Descargado (.fen con snapshot JSON)"
+            : "Descargado (.fen)")
+        : "No se pudo exportar la posición. Revisa la consola.",
+      res?.ok ? 2600 : 2800
+    );
   });
 
   // 🚀 Copiar FEN → enviar snapshot + FEN crudo
@@ -508,10 +725,18 @@ export default function TrainingEditor(container) {
     const res = await copyFenToClipboard({ board, turn });
     // Además de copiar, empujamos el estado actual por WS
     broadcastSoon("copy-fen", 60);
-    toast(res?.ok ? "FEN copiado y enviado a la sala" : "Enviado a la sala (copia local no disponible)", 2200);
+    toast(
+      res?.ok
+        ? "FEN copiado y enviado a la sala"
+        : "Enviado a la sala (copia local no disponible)",
+      2200
+    );
   });
 
-  render(); undo.updateUI(); paintState(); setTurnTextUI();
+  render();
+  undo.updateUI();
+  paintState();
+  setTurnTextUI();
 
   // Asegurar pintado del tablero
   ensureBoardVisible(container, board);
@@ -520,16 +745,28 @@ export default function TrainingEditor(container) {
 
   bindBoardInteractions(container, {
     SIZE,
-    getBoard: () => board, setBoard: (b) => setBoardLocal(b, "move"),
-    getTurn:  () => turn,  setTurn:  (t) => setTurnLocal(t, "move"),
+    getBoard: () => board,
+    setBoard: (b) => setBoardLocal(b, "move"),
+    getTurn:  () => turn,
+    setTurn:  (t) => setTurnLocal(t, "move"),
     getStepState: () => stepState,
     setStepState: (s) => { stepState = s; setChainFlag(!!s); repaintOverlays(); },
     getPlacing: () => placing,
-    render, paintState, saveForUndo,
+    render,
+    paintState,
+    saveForUndo,
     rules: { colorOf, mejoresCapturasGlobal, movimientos, aplicarMovimiento },
     editorMoves: { applySingleCapture: makeApplySingleCaptureWithSfx(applySingleCapture, boardEl) },
     hints: HINTS_FOR_INTERACTIONS,
-    controller: { continueOrEndChain, switchTurn: () => { try { clearSelectedGlowRemote(boardEl); } catch {} switchTurn(); setTurnTextUI(); broadcastSoon("switch-turn"); } },
+    controller: {
+      continueOrEndChain,
+      switchTurn: () => {
+        try { clearSelectedGlowRemote(boardEl); } catch {}
+        switchTurn();
+        setTurnTextUI();
+        broadcastSoon("switch-turn");
+      }
+    },
   });
 
   // Ocultar "Ver capturas" (solo texto accesible)
@@ -541,13 +778,16 @@ export default function TrainingEditor(container) {
   })();
 
   setupToolbar(container, {
-    SIZE, undo,
-    getBoard: () => board, setBoard: (b) => setBoardLocal(b, "toolbar"),
+    SIZE,
+    undo,
+    getBoard: () => board,
+    setBoard: (b) => setBoardLocal(b, "toolbar"),
     startBoard,
     setPlacing: (m) => setPlacing(m),
     getPlacing: () => placing,
     setStepState: (s) => { stepState = s; setChainFlag(!!s); },
-    render, paintState,
+    render,
+    paintState,
     share: () => sharePosition(container, { turn, board: boardForSave() }),
   });
   syncToolButtons(container, placing);
@@ -584,15 +824,20 @@ export default function TrainingEditor(container) {
   container.querySelector("#btn-inicial")?.addEventListener("click", () => {
     undo.save();
     board = startBoard(); turn = COLOR.ROJO;
-    setPlacing(null); stepState = null; setChainFlag(false);
+    setPlacing(null);
+    stepState = null;
+    setChainFlag(false);
     try { clearSelectedGlowRemote(boardEl); } catch {}
-    render(); paintState(); setTurnTextUI();
+    render();
+    paintState();
+    setTurnTextUI();
     broadcastSoon("reset");
   });
 
   container.querySelector("#btn-menu")?.addEventListener("click", () => {
     setPlacing(null);
-    if (typeof navigate === "function") navigate("/"); else location.hash = "#/";
+    if (typeof navigate === "function") navigate("/");
+    else location.hash = "#/";
   });
 
   /* =======================
@@ -632,10 +877,23 @@ export default function TrainingEditor(container) {
     getBoard: () => board,
     getTurn:  () => turn,
     // ⚠️ setters con guardia anti-eco (aplicación remota)
-    setBoard: (b) => { applyingRemote = true; try { setBoardFX(b); board = boardRef.current; } finally { applyingRemote = false; } },
-    setTurn:  (t) => { applyingRemote = true; try { turn = t; } finally { applyingRemote = false; } },
-    repaint: () => { try { render(); } catch {} try { paintState(); } catch {} },
-    rebuildHints: () => { try { buildHints(); } catch {} },
+    setBoard: (b) => {
+      applyingRemote = true;
+      try { setBoardFX(b); board = boardRef.current; }
+      finally { applyingRemote = false; }
+    },
+    setTurn:  (t) => {
+      applyingRemote = true;
+      try { turn = t; }
+      finally { applyingRemote = false; }
+    },
+    repaint: () => {
+      try { render(); } catch {}
+      try { paintState(); } catch {}
+    },
+    rebuildHints: () => {
+      try { buildHints(); } catch {}
+    },
     // ➕ efectos remotos
     onRemoteUI,
   };
@@ -644,6 +902,7 @@ export default function TrainingEditor(container) {
   _ws.onStatus((s) => {
     // console.log("[Editor WS]", s);
   });
+
   // Envolver SFX para que viajen por WS
   try { wrapSfxForWAN(sfx, _ws); } catch {}
 
@@ -651,7 +910,9 @@ export default function TrainingEditor(container) {
   doPushStateNow = () => {
     try {
       if (applyingRemote) return; // anti-eco
-      const connected = (typeof _ws?.isConnected === "function" ? _ws.isConnected() : !!_ws?.isOpen?.());
+      const connected = (typeof _ws?.isConnected === "function"
+        ? _ws.isConnected()
+        : !!_ws?.isOpen?.());
       if (!connected) return; // requiere socket abierto
       const snap = { board: boardRef.current, turn };
       // Enviar snapshot inmediato (Editor → gateway → pares)
@@ -706,9 +967,14 @@ export default function TrainingEditor(container) {
 }
 
 // 🔔 Sonido de jugada inválida
-window.addEventListener("rules:invalid-move", () => { try { sfx.invalid?.(); } catch {} });
+window.addEventListener("rules:invalid-move", () => {
+  try { sfx.invalid?.(); } catch {}
+});
 
-queueMicrotask(() => { try { installReplayDevHook(); } catch (e) { console.warn("[replay] no inició:", e); } });
+queueMicrotask(() => {
+  try { installReplayDevHook(); }
+  catch (e) { console.warn("[replay] no inició:", e); }
+});
 
 if (typeof window !== "undefined") {
   window.__DAMAS_setVariant = function(name) {
@@ -720,23 +986,40 @@ if (typeof window !== "undefined") {
     } catch (e) { console.error("[VARIANT] Error:", e); }
   };
   window.__DAMAS_getPolicy = function() {
-    try { const pol = getPolicy?.() || {}; console.log("[POLICY]", pol); return pol; }
-    catch (e) { console.error("[POLICY] Error:", e); return null; }
+    try {
+      const pol = getPolicy?.() || {};
+      console.log("[POLICY]", pol);
+      return pol;
+    } catch (e) {
+      console.error("[POLICY] Error:", e);
+      return null;
+    }
   };
 }
 
 // ⛳ Botón GOLDEN tras montar
 (function mountGoldenButtonSoon(){
-  const go = () => { try { installGoldenButton(document); } catch (e) { console.warn("[GOLDEN] no se pudo montar:", e); } };
-  if (document.readyState === "complete" || document.readyState === "interactive") setTimeout(go, 0);
-  else window.addEventListener("DOMContentLoaded", go, { once: true });
+  const go = () => {
+    try { installGoldenButton(document); }
+    catch (e) { console.warn("[GOLDEN] no se pudo montar:", e); }
+  };
+  if (document.readyState === "complete" || document.readyState === "interactive")
+    setTimeout(go, 0);
+  else
+    window.addEventListener("DOMContentLoaded", go, { once: true });
 })();
 
 /* === A11Y: Alto Contraste (Alt+H) y roving focus === */
 (function a11yHighContrastToggle(){
   const KEY = "ui.hc";
-  const applyHC = (on) => { if (on) document.documentElement.setAttribute("data-hc", "1"); else document.documentElement.removeAttribute("data-hc"); };
-  const isTypingTarget = (t) => { const tag = (t?.tagName || "").toLowerCase(); return tag === "input" || tag === "textarea" || !!t?.isContentEditable; };
+  const applyHC = (on) => {
+    if (on) document.documentElement.setAttribute("data-hc", "1");
+    else document.documentElement.removeAttribute("data-hc");
+  };
+  const isTypingTarget = (t) => {
+    const tag = (t?.tagName || "").toLowerCase();
+    return tag === "input" || tag === "textarea" || !!t?.isContentEditable;
+  };
   applyHC(localStorage.getItem(KEY) === "1");
   window.addEventListener("keydown", (e) => {
     if (isTypingTarget(e.target)) return;
@@ -747,25 +1030,36 @@ if (typeof window !== "undefined") {
       const next = localStorage.getItem(KEY) === "1" ? "0" : "1";
       localStorage.setItem(KEY, next);
       applyHC(next === "1");
-      try { (window.toast || ((m)=>console.log("[A11Y]", m)))( next === "1" ? "Alto contraste: ON" : "Alto contraste: OFF" ); } catch {}
+      try {
+        (window.toast || ((m)=>console.log("[A11Y]", m)))(
+          next === "1" ? "Alto contraste: ON" : "Alto contraste: OFF"
+        );
+      } catch {}
       e.preventDefault();
     }
   }, { passive: false });
 })();
+
 (function a11yToolbarRovingFocus(){
   const tb = document.querySelector("#editor-toolbar") || document.querySelector(".editor-toolbar");
   if (!tb) return;
   const items = Array.from(tb.querySelectorAll('button, a[role="button"]')).filter(Boolean);
   if (items.length === 0) return;
-  items.forEach(el => { if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "0"); });
+  items.forEach(el => {
+    if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "0");
+  });
   tb.addEventListener("keydown", (e) => {
-    const k = e.key; if (!["ArrowLeft","ArrowRight","Home","End"].includes(k)) return;
-    const itemsArr = items, active = document.activeElement, idx = itemsArr.indexOf(active);
+    const k = e.key;
+    if (!["ArrowLeft","ArrowRight","Home","End"].includes(k)) return;
+    const itemsArr = items;
+    const active = document.activeElement;
+    const idx = itemsArr.indexOf(active);
     let ni = Math.max(0, idx);
     if (k === "ArrowRight") ni = (idx + 1) % itemsArr.length;
     if (k === "ArrowLeft")  ni = (idx - 1 + itemsArr.length) % itemsArr.length;
     if (k === "Home")       ni = 0;
     if (k === "End")        ni = itemsArr.length - 1;
-    itemsArr[ni]?.focus(); e.preventDefault();
+    itemsArr[ni]?.focus();
+    e.preventDefault();
   });
 })();

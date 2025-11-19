@@ -150,3 +150,10 @@ label.online-btn:hover {
 .online-btn {
   border: 2px solid #d2b48c !important;   /* borde madera */
 }
+/* Ocultar completamente el chip de turno en modo Online.
+   Sigue existiendo en el DOM (para que el halo funcione),
+   pero no se ve ni ocupa espacio en la pantalla. */
+[data-page="online"] #turn-info,
+.online-layout #turn-info {
+  display: none !important;
+}
