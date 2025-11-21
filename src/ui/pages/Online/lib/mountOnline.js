@@ -55,6 +55,7 @@ import { createSyncMonitor } from "./sync.js";
 import { getOnlineLayoutHTML } from "../ui.layout.js";
 import { setupOnlineButtons } from "../ui.buttons.js";
 import { setupMediaButtons } from "../ui.mediaButtons.js";
+import { createRTCController } from "./rtc.controller.js";
 
 
 // --- Utils locales ---
@@ -157,15 +158,17 @@ export default function mountOnline(container){
 
   // Para mantener pruebas locales funcionando, si el host es local/LAN
   // seguimos usando ws(s)://<host>:3001; en caso contrario usamos PROD_WS.
-  const urlHost = (urlParams.get("host") || location.hostname || "localhost").trim();
-  const isLocalHost = /^(localhost|127\.0\.0\.1|(?:\d{1,3}\.){3}\d{1,3})$/i.test(urlHost);
+ 
+const urlHost = (urlParams.get("host") || location.hostname || "localhost").trim();
+const isLocalHost = /^(localhost|127\.0\.0\.1|(?:\d{1,3}\.){3}\d{1,3})$/i.test(urlHost);
 
-  const DEFAULT_WS = isLocalHost
-    ? (location.protocol === "https:" ? `wss://${urlHost}:3001` : `ws://${urlHost}:3001`)
-    : PROD_WS;
+const DEFAULT_WS = isLocalHost
+  ? (location.protocol === "https:" ? `wss://${urlHost}:3001` : `ws://${urlHost}:3001`)
+  : PROD_WS;
 
-  // Si viene ?ws=... en la URL, respétalo; si no, usa DEFAULT_WS
-  const WS_URL_FOR_QUERY = urlWs || DEFAULT_WS;
+// Si viene ?ws=... en la URL, respétalo; si no, usa DEFAULT_WS
+const WS_URL_FOR_QUERY = urlWs || DEFAULT_WS;
+
 
   // Orientación (flip) persistida por sala/dispositivo
   let flipOrientation = loadOrientFlip(urlRoom);
@@ -267,6 +270,7 @@ export default function mountOnline(container){
 
   // ===== Transporte (BC/WS)
   let transport = null;
+  let rtc = null;
 
   function closeTransport(){
     try { transport?.close?.(); } catch {}
@@ -298,11 +302,43 @@ export default function mountOnline(container){
   const $wsRoom     = container.querySelector("#ws-room");
   const $btnWSConn  = container.querySelector("#btn-ws-connect");
   const $wsStatus   = container.querySelector("#ws-status");
+    // Video (de momento reutilizamos el preview local)
+  const $videoPreview = container.querySelector("#video-preview");
+
+  // Crear controlador RTC (solo señalización por ahora)
+  rtc = createRTCController({
+    sendSignal: (payload) => {
+      // Enviamos por la red usando el canal estándar t:"ui"/op:"rtc"
+      netSend({
+        t: "ui",
+        op: "rtc",
+        payload,
+      });
+    },
+    onLocalStream: (stream) => {
+      // Por ahora solo aseguramos que, si hay stream local,
+      // se pueda mostrar en el mismo <video> de preview.
+      if ($videoPreview) {
+        $videoPreview.srcObject = stream || null;
+        $videoPreview.style.display = stream ? "block" : "none";
+      }
+    },
+    onRemoteStream: (stream) => {
+      // Más adelante podremos usar otro <video> solo para remoto;
+      // de momento reutilizamos el mismo para pruebas.
+      if ($videoPreview) {
+        $videoPreview.srcObject = stream || null;
+        $videoPreview.style.display = stream ? "block" : "none";
+      }
+    },
+    log: (...args) => console.log("[RTC]", ...args),
+  });
+
 
 // ========================================
 // ACTIVAR BOTONES DE CÁMARA / MICRÓFONO
 // ========================================
-setupMediaButtons({ container });
+setupMediaButtons({ container, rtc });
 
   if ($wsUrl) $wsUrl.value = WS_URL_FOR_QUERY;
 
@@ -736,6 +772,17 @@ setupMediaButtons({ container });
       hardRestart();
       return;
     }
+
+    // 🎥 Señalización WebRTC (video/audio)
+    if (msg.t === "ui" && msg.op === "rtc" && msg.payload && rtc) {
+      try {
+        rtc.handleSignalMessage(msg.payload);
+      } catch (e) {
+        console.warn("[Online][RTC] Error al manejar señal RTC:", e);
+      }
+      return;
+    }
+
 
     if (msg.t === "state") {
       try {

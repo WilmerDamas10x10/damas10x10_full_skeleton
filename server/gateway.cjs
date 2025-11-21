@@ -4,6 +4,8 @@
 // Requiere: npm i ws
 
 const http = require("http");
+const https = require("https");
+const fs = require("fs");
 const os = require("os");
 const { WebSocketServer } = require("ws");
 
@@ -23,33 +25,70 @@ function localIPs() {
   return out;
 }
 function sanitizeRoom(s) {
-  return String(s || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9_-]/g, "") || "sala1";
+  return (
+    String(s || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9_-]/g, "") || "sala1"
+  );
 }
-const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+const uid = () =>
+  Math.random().toString(36).slice(2) + Date.now().toString(36);
 
-// HTTP server (health + landing)
-const server = http.createServer((req, res) => {
+// ===============================================
+// HTTP/HTTPS server (health + landing)
+// ===============================================
+
+// Detectar si tenemos certificados locales (modo DEV con mkcert)
+const hasLocalCerts =
+  fs.existsSync("./localhost+2.pem") &&
+  fs.existsSync("./localhost+2-key.pem");
+
+let server;
+let WS_SCHEME = "ws";
+let HTTP_SCHEME = "http";
+
+const requestHandler = (req, res) => {
   if (req.url === "/health") {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true }));
+    res.end(JSON.stringify({ ok: true, ts: Date.now() }));
     return;
   }
   res.writeHead(200, { "content-type": "text/plain" });
   res.end("WS gateway up. Use WS on / or /ws\n");
-});
+};
+
+if (hasLocalCerts) {
+  // Modo desarrollo local: HTTPS + WSS con los mismos certificados que Vite
+  const key = fs.readFileSync("./localhost+2-key.pem");
+  const cert = fs.readFileSync("./localhost+2.pem");
+  server = https.createServer({ key, cert }, requestHandler);
+  WS_SCHEME = "wss";
+  HTTP_SCHEME = "https";
+  console.log(
+    "[ws] DEV TLS habilitado: usando wss:// en local (localhost+2.pem)"
+  );
+} else {
+  // Modo normal (Render u otros entornos sin certificados locales)
+  server = http.createServer(requestHandler);
+  WS_SCHEME = "ws";
+  HTTP_SCHEME = "http";
+  console.log(
+    "[ws] Modo sin TLS: usando ws:// (no se encontraron certificados locales)"
+  );
+}
 
 // WS upgrade en / y /ws
 const wss = new WebSocketServer({ noServer: true });
 server.on("upgrade", (req, socket, head) => {
   try {
-    const url = new URL(req.url, `http://${req.headers.host}`);
+    const url = new URL(req.url, `${HTTP_SCHEME}://${req.headers.host}`);
     const ok = url.pathname === "/" || url.pathname === "/ws";
     if (!ok) return socket.destroy();
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+    wss.handleUpgrade(req, socket, head, (ws) =>
+      wss.emit("connection", ws, req)
+    );
   } catch {
     socket.destroy();
   }
@@ -79,7 +118,9 @@ function broadcast(room, data, except) {
   for (const client of set) {
     if (client === except) continue;
     if (client.readyState === 1) {
-      try { client.send(data); } catch {}
+      try {
+        client.send(data);
+      } catch {}
     }
   }
 }
@@ -103,7 +144,11 @@ wss.on("connection", (ws) => {
   ws.on("message", (buf) => {
     // 1) Parseo
     let msg;
-    try { msg = JSON.parse(buf.toString("utf8")); } catch { return; }
+    try {
+      msg = JSON.parse(buf.toString("utf8"));
+    } catch {
+      return;
+    }
 
     // 2) Rate limit BÁSICO (DESACTIVADO intencionalmente)
     // --- Rate limit básico por socket (≈40 msg/seg) ---
@@ -126,11 +171,19 @@ wss.on("connection", (ws) => {
     }
 
     const allowedT = new Set([
-      "state", "move", "ui",
-      "hello", "join", "bye",
-      "state_req", "replay_req", "replay",
-      "presence", "presence_ack", "peers",
-      "fen"
+      "state",
+      "move",
+      "ui",
+      "hello",
+      "join",
+      "bye",
+      "state_req",
+      "replay_req",
+      "replay",
+      "presence",
+      "presence_ack",
+      "peers",
+      "fen",
     ]);
     if (!allowedT.has(msg.t)) {
       console.warn("[WS] Tipo de mensaje no permitido:", msg.t);
@@ -146,7 +199,9 @@ wss.on("connection", (ws) => {
       joinRoom(ws, room);
       console.log(`[ws] ${ws.id} JOIN room=${room}`);
       // Notificar cantidad de pares a toda la sala
-      try { broadcastPeers(room); } catch {}
+      try {
+        broadcastPeers(room);
+      } catch {}
       return;
     }
 
@@ -172,7 +227,9 @@ wss.on("connection", (ws) => {
     // Guardamos la sala antes de limpiar, para poder anunciar peers correctamente
     const roomBefore = ws.room;
     leaveRoom(ws);
-    try { if (roomBefore) broadcastPeers(roomBefore); } catch {}
+    try {
+      if (roomBefore) broadcastPeers(roomBefore);
+    } catch {}
   });
 
   ws.on("error", (err) => {
@@ -182,8 +239,12 @@ wss.on("connection", (ws) => {
 
 // Escuchar en LAN
 server.listen(PORT, HOST, () => {
-  console.log(`WS gateway listening on ws://${HOST}:${PORT}  (paths: / and /ws)`);
+  console.log(
+    `WS gateway listening on ${WS_SCHEME}://${HOST}:${PORT}  (paths: / and /ws)`
+  );
   for (const ip of localIPs()) {
-    console.log(`• LAN ws://${ip}:${PORT}   Health: http://${ip}:${PORT}/health`);
+    console.log(
+      `• LAN ${WS_SCHEME}://${ip}:${PORT}   Health: ${HTTP_SCHEME}://${ip}:${PORT}/health`
+    );
   }
 });
