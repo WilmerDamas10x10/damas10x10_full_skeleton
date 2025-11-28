@@ -16,7 +16,8 @@ export function getOnlineLayoutHTML(DEBUG_PANEL_HTML = "") {
           <span id="turn-info" class="online-btn online-btn--status"></span>
 
           <button class="online-btn" id="btn-restart">
-            Reiniciar
+            <span class="icon-xl">⟳</span>
+            <span class="online-btn-text">Reiniciar</span>
           </button>
 
           <button
@@ -24,41 +25,62 @@ export function getOnlineLayoutHTML(DEBUG_PANEL_HTML = "") {
             id="btn-rotate"
             title="Invierte la orientación local del tablero"
           >
-            Orientación: auto (rotar)
+            <span class="icon-xl">🔁</span>
+            <span class="online-btn-text">Orientación: auto (rotar)</span>
           </button>
 
           <button class="online-btn" id="btn-back">
-            Volver
+            <span class="icon-xl">⬅</span>
+            <span class="online-btn-text">Volver</span>
           </button>
 
           <!-- 🔘 Proponer empate -->
           <button class="online-btn" id="btn-offer-draw">
-            Proponer empate
+            <span class="icon-xl">🤝</span>
+            <span class="online-btn-text">Proponer empate</span>
           </button>
 
           <!-- 🔘 Rendirse -->
           <button class="online-btn" id="btn-resign">
-            Rendirse
+            <span class="icon-xl">🏳️</span>
+            <span class="online-btn-text">Rendirse</span>
           </button>
 
           <!-- 🔘 NUEVO: Botones de micrófono y cámara -->
           <div class="online-media-row" style="margin-top:10px; display:flex; flex-direction:column; gap:8px;">
             <button class="online-btn" id="btn-toggle-mic">
-              Micrófono
+              <span class="icon-xl">🎙️</span>
+              <span class="online-btn-text">Micrófono</span>
             </button>
 
             <button class="online-btn" id="btn-toggle-cam">
-              Cámara
+              <span class="icon-xl">📷</span>
+              <span class="online-btn-text">Cámara</span>
             </button>
           </div>
 
-          <!-- 🔴 Vista previa de la cámara -->
+          <!-- 🔴 Vista previa de la cámara (LOCAL) -->
           <div
             id="video-preview-container"
-            style="margin-top:10px; display:flex; justify-content:center;"
+            style="margin-top:10px; display:flex; flex-direction:column; align-items:center; gap:6px;"
           >
             <video
               id="video-preview"
+              autoplay
+              playsinline
+              muted
+              style="
+                width: 160px;
+                height: 120px;
+                border-radius: 6px;
+                background: #000;
+                display: none;
+              "
+            ></video>
+
+            <!-- 🔵 Video REMOTO -->
+            <video
+              id="video-remote"
               autoplay
               playsinline
               style="
@@ -96,7 +118,11 @@ export function getOnlineLayoutHTML(DEBUG_PANEL_HTML = "") {
             >
           </label>
 
-          <button class="online-btn" id="btn-ws-connect">
+          <!-- --------------------------------------------
+               🔵 AQUÍ está el cambio solicitado:
+               Se añade la clase online-btn--disconnected
+               -------------------------------------------- -->
+          <button class="online-btn online-btn--disconnected" id="btn-ws-connect">
             Conectar WS
           </button>
 

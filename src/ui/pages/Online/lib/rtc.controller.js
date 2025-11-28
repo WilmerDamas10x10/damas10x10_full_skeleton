@@ -13,7 +13,7 @@
 // const rtc = createRTCController({
 //   sendSignal: (payload) => {
 //     // aquí mandas por WS algo como:
-//     // ws.send(JSON.stringify({ t:"ui", op:"rtc", ...payload }));
+//     // ws.send(JSON.stringify({ t:"ui", op:"rtc", payload }));
 //   },
 //   onLocalStream: (stream) => {
 //     // asignar stream a <video id="cam-local">
@@ -25,14 +25,14 @@
 // });
 //
 // // Al recibir un mensaje WS de tipo RTC, llamas:
-// rtc.handleSignalMessage(remotePayload);
+// // rtc.handleSignalMessage(remotePayload);
 //
-// // Para iniciar cámara y oferta:
-// await rtc.startLocalMedia();
-// await rtc.startAsCaller();
+// // Para iniciar cámara y oferta (caller):
+// // await rtc.startLocalMedia();
+// // await rtc.startAsCaller();
 //
 // // Para colgar:
-// rtc.stopAll();
+// // rtc.stopAll();
 //
 // ===============================================
 
@@ -53,10 +53,10 @@ function makeLogger(log) {
  * Crea un controlador WebRTC encapsulado.
  *
  * @param {Object} options
- * @param {Function} options.sendSignal  - fn(payload) para enviar señalización via WS
+ * @param {Function} options.sendSignal    - fn(payload) para enviar señalización via WS
  * @param {Function} options.onLocalStream  - fn(stream) cuando tenemos cámara/mic local
- * @param {Function} options.onRemoteStream - fn(stream) cuando llega video remoto
- * @param {Function} [options.log]      - fn(...args) para debug (console.log)
+ * @param {Function} options.onRemoteStream - fn(stream) cuando llega video/audio remoto
+ * @param {Function} [options.log]         - fn(...args) para debug (console.log)
  * @returns controlador RTC con métodos públicos
  */
 export function createRTCController(options = {}) {
@@ -80,11 +80,17 @@ export function createRTCController(options = {}) {
   let remoteStream = null;
   let isCaller = false;
   let isStarted = false;
+  let pendingRemoteCandidates = [];
 
   // ------------------------------------------
   // Interno: crea RTCPeerConnection si no existe
   // ------------------------------------------
   function ensurePeerConnection() {
+    // Si hay una PC cerrada, la descartamos y creamos una nueva
+    if (pc && pc.signalingState === "closed") {
+      pc = null;
+    }
+
     if (pc) return pc;
 
     log("[RTC] Creando RTCPeerConnection…");
@@ -187,14 +193,60 @@ export function createRTCController(options = {}) {
   }
 
   // ------------------------------------------
+  // Interno: volcar ICE remotos pendientes
+  // ------------------------------------------
+  async function flushPendingRemoteCandidates() {
+    if (!pc || !pc.remoteDescription) return;
+    if (!pendingRemoteCandidates.length) return;
+
+    const queue = pendingRemoteCandidates;
+    pendingRemoteCandidates = [];
+
+    for (const candidate of queue) {
+      try {
+        log("[RTC] Añadiendo candidate remoto (buffered)…");
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        console.error("[RTC] Error al añadir ICE candidate remoto (buffered):", err);
+      }
+    }
+  }
+
+  // ------------------------------------------
   // Caller: inicia como emisor (crea OFERTA)
   // ------------------------------------------
   async function startAsCaller() {
-    isCaller = true;
-    isStarted = true;
     const connection = ensurePeerConnection();
 
-    // Asegurarnos de tener cámara/mic
+    // Evitar múltiples ofertas mientras la señalización no esté estable
+    if (connection.signalingState !== "stable") {
+      log(
+        "[RTC] startAsCaller: signalingState no es 'stable' (",
+        connection.signalingState,
+        "), ignorando llamada duplicada."
+      );
+      return;
+    }
+
+    // Si YA éramos caller y la PC sigue estable, evitamos ofertas duplicadas.
+    // Pero si llegamos aquí habiendo sido antes "callee", PERMITIMOS
+    // convertirnos ahora en caller para forzar una renegociación
+    // (por ejemplo, cuando el segundo jugador enciende su cámara
+    // después de que la llamada ya está conectada).
+    if (isStarted && isCaller) {
+      log(
+        "[RTC] startAsCaller: ya iniciado anteriormente como caller, ignorando llamada adicional."
+      );
+      return;
+    }
+
+    // A partir de aquí podemos actuar como caller (primera vez
+    // o renegociación desde el lado que antes era callee).
+    isCaller = true;
+    isStarted = true;
+
+
+    // Asegurarnos de tener cámara/mic LOCAL (quien llama SÍ comparte algo)
     if (!localStream) {
       await startLocalMedia();
     }
@@ -217,19 +269,32 @@ export function createRTCController(options = {}) {
   // Callee: recibe una OFERTA del otro peer
   // ------------------------------------------
   async function handleRemoteOffer(sdp) {
+    const connection = ensurePeerConnection();
+
+    // Si ya estamos en negociación y no está estable, ignoramos offers extra
+    if (connection.signalingState !== "stable") {
+      log(
+        "[RTC] Callee: offer recibida pero signalingState no es 'stable' (",
+        connection.signalingState,
+        "), ignorando offer duplicada."
+      );
+      return;
+    }
+
     isCaller = false;
     isStarted = true;
-    const connection = ensurePeerConnection();
 
     log("[RTC] Callee: recibiendo offer…");
     const desc = new RTCSessionDescription({ type: "offer", sdp });
     await connection.setRemoteDescription(desc);
 
-    // Asegurarse de tener cámara/mic local
-    if (!localStream) {
-      await startLocalMedia();
+    // ⚠️ IMPORTANTE:
+    // El CALLEE **NO** enciende cámara/mic automáticamente.
+    // Solo adjunta pistas locales si YA tiene un stream local (por ejemplo,
+    // si el usuario activó su propio micrófono/cámara manualmente).
+    if (localStream) {
+      attachLocalTracks();
     }
-    attachLocalTracks();
 
     log("[RTC] Callee: creando answer…");
     const answer = await connection.createAnswer();
@@ -242,6 +307,9 @@ export function createRTCController(options = {}) {
         sdp: answer.sdp,
       });
     }
+
+    // Ahora que tenemos remoteDescription, podemos volcar ICE pendientes
+    await flushPendingRemoteCandidates();
   }
 
   // ------------------------------------------
@@ -252,23 +320,42 @@ export function createRTCController(options = {}) {
       console.warn("[RTC] handleRemoteAnswer sin pc. Ignorando.");
       return;
     }
+
+    // Solo aceptamos answer si tenemos una local-offer pendiente
+    if (pc.signalingState !== "have-local-offer") {
+      log(
+        "[RTC] handleRemoteAnswer: signalingState no es 'have-local-offer' (",
+        pc.signalingState,
+        "), ignorando answer."
+      );
+      return;
+    }
+
     log("[RTC] Caller: recibiendo answer…");
     const desc = new RTCSessionDescription({ type: "answer", sdp });
     await pc.setRemoteDescription(desc);
+
+    // Ahora que tenemos remoteDescription, podemos volcar ICE pendientes
+    await flushPendingRemoteCandidates();
   }
 
   // ------------------------------------------
   // Recibe ICE candidate remoto
   // ------------------------------------------
   async function handleRemoteIceCandidate(candidate) {
-    if (!pc) {
-      console.warn("[RTC] handleRemoteIceCandidate sin pc. Ignorando.");
-      return;
-    }
     if (!candidate) {
       log("[RTC] Candidate remoto null (fin de candidatos).");
       return;
     }
+
+    // Si aún no hay PC o aún no tenemos remoteDescription,
+    // lo guardamos en buffer para aplicarlo después
+    if (!pc || !pc.remoteDescription) {
+      log("[RTC] handleRemoteIceCandidate: aún sin remoteDescription, bufereando candidate remoto.");
+      pendingRemoteCandidates.push(candidate);
+      return;
+    }
+
     try {
       log("[RTC] Añadiendo candidate remoto…");
       await pc.addIceCandidate(new RTCIceCandidate(candidate));
@@ -309,7 +396,7 @@ export function createRTCController(options = {}) {
   }
 
   // ------------------------------------------
-  // Detener todo (llamada + cámara)
+  // Detener todo (llamada + cámara/mic)
   // ------------------------------------------
   function stopAll() {
     log("[RTC] stopAll()");
@@ -334,6 +421,7 @@ export function createRTCController(options = {}) {
 
     // El remoteStream se corta solo al cerrar pc, pero lo limpiamos
     remoteStream = null;
+    pendingRemoteCandidates = [];
 
     isCaller = false;
     isStarted = false;
