@@ -341,6 +341,19 @@ export default function mountOnline(container) {
     transport = null;
   }
 
+  // 🔒 NUEVO: helpers para limpiar también WebRTC (cámara/mic/PC)
+  function stopRTC() {
+    try {
+      rtc?.stopAll?.();
+    } catch {}
+  }
+
+  function closeRealtime() {
+    // Cierra transporte (BC/WS) y cualquier llamada RTC activa
+    closeTransport();
+    stopRTC();
+  }
+
   function netSend(obj) {
     try {
       transport?.send?.({
@@ -619,7 +632,7 @@ export default function mountOnline(container) {
   let seqCtl = null;
 
   function connectBC(name) {
-    closeTransport();
+    closeRealtime();
     const room = sanitizeRoom(name || "sala1");
     currentRoom = room;
 
@@ -652,7 +665,7 @@ export default function mountOnline(container) {
   }
 
   function connectWS(url, room) {
-    closeTransport();
+    closeRealtime();
     const safeRoom = sanitizeRoom(room || "sala1");
     currentRoom = safeRoom;
 
@@ -1515,7 +1528,7 @@ export default function mountOnline(container) {
     urlRoom,
     render,
     getSeqCtl: () => seqCtl,
-    closeTransport,
+    closeTransport: closeRealtime,
     netSend,
     isSpectator,
     getStepState: () => stepState,
