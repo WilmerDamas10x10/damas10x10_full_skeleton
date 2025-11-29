@@ -43,19 +43,23 @@
   align-items: stretch;
 }
 
-/* Botones / campos unificados
-   TODOS tienen exactamente el mismo porte que "Conectar WS" */
+/* Eliminar posibles separadores vacíos en WS */
+.online-column--ws > :empty {
+  display: none !important;
+}
+
+/* Botones / campos unificados */
 .online-btn {
   box-sizing: border-box;
   width: 100%;
-  height: 48px;                    /* ← MISMA ALTURA PARA TODOS */
+  height: 48px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 0 16px;                 /* padding horizontal uniforme */
+  padding: 0 16px;
   border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.35);
+  border: 2px solid #d2b48c !important; /* borde madera */
   background: linear-gradient(
     145deg,
     rgba(255, 255, 255, 0.98),
@@ -63,36 +67,25 @@
   );
   box-shadow: 0 10px 25px rgba(15, 23, 42, 0.10);
   font-size: 15px;
-  line-height: 1;
   font-weight: 500;
   color: #1f2933;
   cursor: pointer;
 }
 
-/* ============================================
-   NUEVO: Colores del botón "Conectar WS"
-   ============================================ */
-
-/* Estado desconectado (gris neutro) */
+/* Conectar WS estados */
 .online-btn--disconnected {
-  background: #e5e7eb !important; /* gris suave */
+  background: #e5e7eb !important;
   color: #374151 !important;
   border-color: #cbd5e1 !important;
 }
 
-/* Estado conectado (verde/azul brillante) */
 .online-btn--connected {
-  background: linear-gradient(
-    145deg,
-    #4ade80,
-    #22c55e
-  ) !important;
+  background: linear-gradient(145deg, #4ade80, #22c55e) !important;
   color: white !important;
   border-color: #16a34a !important;
   box-shadow: 0 10px 25px rgba(34, 197, 94, 0.35) !important;
 }
 
-/* Estado hover sólo para elementos clicables (botones y labels) */
 button.online-btn:hover,
 label.online-btn:hover {
   background: linear-gradient(
@@ -102,15 +95,14 @@ label.online-btn:hover {
   );
 }
 
-/* El span de estado (Turno, WS: Sin conexión) no debe parecer botón pulsable */
+/* Span de estado */
 .online-btn--status {
   cursor: default;
-  justify-content: center;   /* texto centrado */
+  justify-content: center;
   font-weight: 600;
 }
 
-/* Inputs dentro de los "botones" WS (URL, Sala)
-   Mantienen el MISMO alto que el resto gracias al height de .online-btn */
+/* Inputs dentro de botones WS */
 .online-btn-input {
   flex: 1 1 auto;
   border: none;
@@ -126,7 +118,7 @@ label.online-btn:hover {
   outline: none;
 }
 
-/* Responsivo: si la pantalla se estrecha, que las columnas puedan bajar */
+/* Responsivo general (móviles/tablets en general) */
 @media (max-width: 960px) {
   .online-card {
     flex-wrap: wrap;
@@ -139,10 +131,8 @@ label.online-btn:hover {
     max-width: 260px;
   }
 }
-/* =========================================
-   ELIMINAR FONDO BLANCO DETRÁS DEL TABLERO
-   ========================================= */
 
+/* Eliminar fondo detrás del tablero */
 .online-card {
   background: transparent !important;
   box-shadow: none !important;
@@ -150,70 +140,49 @@ label.online-btn:hover {
   padding: 0 !important;
 }
 
-/* =========================================
-   SEPARAR BOTONES DEL TABLERO
-   ========================================= */
-
-/* Espacio horizontal entre las columnas y el tablero */
+/* Separación entre columnas y tablero */
 .online-card {
-  column-gap: 40px !important;   /* separación lateral */
-  gap: 40px !important;           /* por compatibilidad */
+  column-gap: 40px !important;
+  gap: 40px !important;
 }
 
-/* Un poco de separación vertical también, por si sirve */
 .online-column,
 .online-column--ws {
   margin-top: 10px;
 }
 
-/* =======================================================
-   BORDES NUEVOS PARA TODOS LOS BOTONES (madera elegante)
-   ======================================================= */
-
-.online-btn {
-  border: 2px solid #d2b48c !important;   /* borde madera */
-}
-/* Ocultar completamente el chip de turno en modo Online.
-   Sigue existiendo en el DOM (para que el halo funcione),
-   pero no se ve ni ocupa espacio en la pantalla. */
+/* Turn-info oculto */
 [data-page="online"] #turn-info,
 .online-layout #turn-info {
   display: none !important;
 }
 
+/* Iconos grandes */
 .icon-xl {
-  font-size: 22px;   /* puedes subir a 24px o 26px si quieres más grande */
+  font-size: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   line-height: 1;
-  margin-right: 6px; /* espacio entre icono y texto */
+  margin-right: 6px;
 }
 
-/* ================
-   Video Online (RTC)
-   ================ */
-
+/* ================ Video RTC ================ */
 .online-video-wrapper {
   position: relative;
   width: 100%;
-  max-width: 320px; /* ajusta si quieres más grande */
+  max-width: 320px;
   margin-top: 8px;
 }
-
 .online-video {
   background: #000;
   border-radius: 8px;
-  display: none;       /* oculto hasta que haya stream */
+  display: none;
 }
-
-/* El rival ocupa todo el ancho */
 .online-video--remote {
   width: 100%;
   max-height: 220px;
 }
-
-/* Tu propia cámara en pequeño, esquina inferior derecha */
 .online-video--local {
   position: absolute;
   width: 30%;
@@ -222,4 +191,83 @@ label.online-btn:hover {
   bottom: 6px;
   border: 2px solid rgba(255, 255, 255, 0.7);
   box-shadow: 0 0 8px rgba(0, 0, 0, 0.5);
+}
+
+/* ==========================================
+   🎯 AJUSTE EXCLUSIVO PARA iPad Pro (1024×1366)
+   ========================================== */
+@media (width: 1024px) and (height: 1366px) {
+
+  .online-card {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  /* ---- BOTONES SUPERIORES (Reiniciar, Orientar, Volver...) ---- */
+  .online-column {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    width: 100%;
+    max-width: 480px;
+    margin-bottom: 18px;
+  }
+
+  .online-column > * {
+    width: 100% !important;
+    grid-column: auto !important;
+  }
+
+  /* ---- BOTONES INFERIORES (WS URL, Sala, Conectar, Estado) ---- */
+  .online-column--ws {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: auto;
+    gap: 6px;                 /* poco espacio entre filas */
+    width: 100%;
+    max-width: 480px;
+    margin-top: 12px;
+    flex: 0 0 auto;           /* que pueda usar todo el ancho */
+    max-width: 480px;
+  }
+
+  .online-column--ws > * {
+    width: 100% !important;
+    margin: 0 !important;
+  }
+
+  /* Forzar EXACTAMENTE 2×2:
+     1: WS URL   | 2: Sala
+     3: Conectar | 4: Estado
+     Cualquier extra se oculta. */
+  .online-column--ws > *:nth-child(1) {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .online-column--ws > *:nth-child(2) {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .online-column--ws > *:nth-child(3) {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .online-column--ws > *:nth-child(4) {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .online-column--ws > *:nth-child(n + 5) {
+    display: none !important;
+  }
+
+  /* Tablero un poquito más grande */
+  #board-root {
+    transform: scale(1.05);
+    transform-origin: center;
+    margin: 10px 0 20px 0;
+  }
 }

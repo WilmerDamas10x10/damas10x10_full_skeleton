@@ -334,14 +334,20 @@ export default function mountOnline(container) {
   let transport = null;
   let rtc = null;
 
+  // 🌐 Estado de red (para bloquear movimientos cuando WS no está estable)
+  let netMode = "none"; // "bc" | "ws" | "none"
+  let wsState = "closed"; // último estado reportado por createTransport("ws")
+
   function closeTransport() {
     try {
       transport?.close?.();
     } catch {}
     transport = null;
+    netMode = "none";
+    wsState = "closed";
   }
 
-  // 🔒 NUEVO: helpers para limpiar también WebRTC (cámara/mic/PC)
+  // 🔒 Helpers para limpiar también WebRTC (cámara/mic/PC)
   function stopRTC() {
     try {
       rtc?.stopAll?.();
@@ -385,7 +391,7 @@ export default function mountOnline(container) {
   const $btnWSConn = container.querySelector("#btn-ws-connect");
   const $wsStatus = container.querySelector("#ws-status");
 
-  // 🎥 NUEVO: refs para video local y remoto
+  // 🎥 Refs para video local y remoto
   const $videoLocal = container.querySelector("#video-local");
   const $videoRemote = container.querySelector("#video-remote");
 
@@ -561,6 +567,7 @@ export default function mountOnline(container) {
   }
 
   function handleWSStatus(s) {
+    wsState = s?.state || wsState;
     const base = "WS" + (s.room ? `:${s.room}` : "");
 
     // 🔵 Actualizar texto del chip de estado (derecha)
@@ -604,9 +611,18 @@ export default function mountOnline(container) {
       }
     }
 
-    // Si el estado es 'open', ya se manejó arriba (state_req + presence)
-    if (s.state === "open" || s.state === "connecting" || s.state === "retrying" ||
-        s.state === "error" || s.state === "closed") {
+    // Actualizar bloqueo de tablero según estado WS
+    updateLock();
+
+    // Si el estado es 'open', 'connecting', 'retrying', 'error' o 'closed',
+    // ya se manejó arriba (UI + bloqueo).
+    if (
+      s.state === "open" ||
+      s.state === "connecting" ||
+      s.state === "retrying" ||
+      s.state === "error" ||
+      s.state === "closed"
+    ) {
       return;
     }
   }
@@ -635,6 +651,10 @@ export default function mountOnline(container) {
     closeRealtime();
     const room = sanitizeRoom(name || "sala1");
     currentRoom = room;
+
+    // BC: la red está disponible mientras el canal exista
+    netMode = "bc";
+    wsState = "open";
 
     // Cargar orientación persistida al entrar a esta sala
     flipOrientation = loadOrientFlip(currentRoom);
@@ -668,6 +688,10 @@ export default function mountOnline(container) {
     closeRealtime();
     const safeRoom = sanitizeRoom(room || "sala1");
     currentRoom = safeRoom;
+
+    // WS: empezamos en modo "connecting" hasta que handleWSStatus diga "open"
+    netMode = "ws";
+    wsState = "connecting";
 
     // Cargar orientación persistida al entrar a esta sala
     flipOrientation = loadOrientFlip(currentRoom);
@@ -716,8 +740,16 @@ export default function mountOnline(container) {
   }
 
   function updateLock() {
+    // ⛔ Si estamos en WS y NO está 'open', bloqueamos movimientos
+    const wsBlocked =
+      netMode === "ws" &&
+      wsState !== "open";
+
     const myTurn =
-      turn === localSide && !applyingRemote && !isSpectator;
+      turn === localSide &&
+      !applyingRemote &&
+      !isSpectator &&
+      !wsBlocked;
 
     if ($board) {
       $board.style.pointerEvents = myTurn ? "auto" : "none";

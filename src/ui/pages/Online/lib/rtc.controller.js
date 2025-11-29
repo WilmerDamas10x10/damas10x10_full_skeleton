@@ -36,10 +36,25 @@
 //
 // ===============================================
 
+// ⚠️ Aquí configuramos STUN + TURN.
+// - STUN: para intentar conexión directa P2P.
+// - TURN: “plan B” cuando las redes son muy restrictivas.
+//
+// IMPORTANTE: reemplaza TU-SERVIDOR-TURN / usuario / password
+// por los datos reales de tu servidor TURN (coturn o similar).
 const DEFAULT_RTC_CONFIG = {
   iceServers: [
-    // STUN público. Para LAN va sobrado.
+    // STUN público. Para LAN va sobrado y en muchas WAN funciona.
     { urls: "stun:stun.l.google.com:19302" },
+
+    // TURN (plantilla de ejemplo; pon aquí tu servidor real).
+    // Aunque este host no exista todavía, no rompe nada:
+    // el navegador intentará usarlo, y si falla seguirá usando STUN.
+    {
+      urls: "turn:TU-SERVIDOR-TURN:3478",
+      username: "TU_USUARIO_TURN",
+      credential: "TU_PASSWORD_TURN",
+    },
   ],
 };
 
@@ -88,23 +103,39 @@ export function createRTCController(options = {}) {
   function ensurePeerConnection() {
     // Si hay una PC cerrada, la descartamos y creamos una nueva
     if (pc && pc.signalingState === "closed") {
+      log(
+        "[RTC] PeerConnection previa estaba 'closed', creando una nueva."
+      );
       pc = null;
     }
 
-    if (pc) return pc;
+    if (pc) {
+      log(
+        "[RTC] Reutilizando RTCPeerConnection existente. signalingState =",
+        pc.signalingState,
+        "connectionState =",
+        pc.connectionState
+      );
+      return pc;
+    }
 
-    log("[RTC] Creando RTCPeerConnection…");
+    log("[RTC] Creando RTCPeerConnection…", DEFAULT_RTC_CONFIG);
     pc = new RTCPeerConnection(DEFAULT_RTC_CONFIG);
 
     // Cuando lleguen tracks remotos (video/audio)
     pc.ontrack = (event) => {
-      log("[RTC] ontrack remoto", event.streams);
+      log("[RTC] ontrack remoto, streams:", event.streams);
       const [stream] = event.streams || [];
       if (stream) {
         remoteStream = stream;
         if (typeof onRemoteStream === "function") {
+          log(
+            "[RTC] ontrack: asignando remoteStream a onRemoteStream()"
+          );
           onRemoteStream(stream);
         }
+      } else {
+        log("[RTC] ontrack remoto sin stream[0]");
       }
     };
 
@@ -112,9 +143,18 @@ export function createRTCController(options = {}) {
     pc.onicecandidate = (event) => {
       if (!event.candidate) {
         log("[RTC] onicecandidate: fin de candidatos");
+        if (typeof sendSignal === "function") {
+          // opcional: avisar fin de candidatos al otro lado si lo necesitas
+          // sendSignal({ kind: "ice", candidate: null });
+        }
         return;
       }
-      log("[RTC] onicecandidate: enviando candidate");
+      log("[RTC] onicecandidate: enviando candidate", {
+        type: event.candidate.type,
+        protocol: event.candidate.protocol,
+        address: event.candidate.address,
+        port: event.candidate.port,
+      });
       if (typeof sendSignal === "function") {
         sendSignal({
           kind: "ice",
@@ -126,12 +166,18 @@ export function createRTCController(options = {}) {
     pc.onconnectionstatechange = () => {
       log("[RTC] connectionState:", pc.connectionState);
       if (pc.connectionState === "failed") {
-        log("[RTC] Conexión RTC fallida, se recomienda stopAll()");
+        log(
+          "[RTC] Conexión RTC fallida (connectionState='failed'), se recomienda stopAll()"
+        );
       }
     };
 
     pc.oniceconnectionstatechange = () => {
       log("[RTC] iceConnectionState:", pc.iceConnectionState);
+    };
+
+    pc.onsignalingstatechange = () => {
+      log("[RTC] signalingState:", pc.signalingState);
     };
 
     return pc;
@@ -142,16 +188,24 @@ export function createRTCController(options = {}) {
   // ------------------------------------------
   async function startLocalMedia(constraints = { video: true, audio: true }) {
     if (localStream) {
-      log("[RTC] Local stream ya existe, reutilizando.");
+      log(
+        "[RTC] Local stream ya existe, reutilizando. tracks:",
+        localStream.getTracks().map((t) => t.kind)
+      );
       if (typeof onLocalStream === "function") onLocalStream(localStream);
       return localStream;
     }
 
     log("[RTC] Solicitando getUserMedia…", constraints);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const stream = await navigator.mediaDevices.getUserMedia(
+        constraints
+      );
       localStream = stream;
-      log("[RTC] getUserMedia OK");
+      log(
+        "[RTC] getUserMedia OK. tracks:",
+        stream.getTracks().map((t) => t.kind)
+      );
 
       if (typeof onLocalStream === "function") {
         onLocalStream(stream);
@@ -160,6 +214,10 @@ export function createRTCController(options = {}) {
       // Si ya hay PeerConnection, añadimos pistas
       if (pc) {
         stream.getTracks().forEach((track) => {
+          log(
+            "[RTC] Añadiendo track local a PC (post-getUserMedia):",
+            track.kind
+          );
           pc.addTrack(track, stream);
         });
       }
@@ -176,15 +234,27 @@ export function createRTCController(options = {}) {
   // (se llama al crear la PC y tras tener media)
   // ------------------------------------------
   function attachLocalTracks() {
-    if (!pc || !localStream) return;
+    if (!pc || !localStream) {
+      log(
+        "[RTC] attachLocalTracks: no pc o no localStream."
+      );
+      return;
+    }
 
     const senders = pc.getSenders();
-    const existingTracks = senders.map((s) => s.track).filter(Boolean);
+    const existingTracks = senders
+      .map((s) => s.track)
+      .filter(Boolean);
 
     localStream.getTracks().forEach((track) => {
-      const already = existingTracks.find((t) => t.kind === track.kind);
+      const already = existingTracks.find(
+        (t) => t && t.kind === track.kind
+      );
       if (already) {
-        log("[RTC] Track local ya añadido:", track.kind);
+        log(
+          "[RTC] Track local ya añadido, omitiendo:",
+          track.kind
+        );
         return;
       }
       log("[RTC] Añadiendo track local:", track.kind);
@@ -196,8 +266,21 @@ export function createRTCController(options = {}) {
   // Interno: volcar ICE remotos pendientes
   // ------------------------------------------
   async function flushPendingRemoteCandidates() {
-    if (!pc || !pc.remoteDescription) return;
-    if (!pendingRemoteCandidates.length) return;
+    if (!pc || !pc.remoteDescription) {
+      log(
+        "[RTC] flushPendingRemoteCandidates: aún no hay pc o remoteDescription."
+      );
+      return;
+    }
+    if (!pendingRemoteCandidates.length) {
+      return;
+    }
+
+    log(
+      "[RTC] flushPendingRemoteCandidates: aplicando",
+      pendingRemoteCandidates.length,
+      "candidates en buffer."
+    );
 
     const queue = pendingRemoteCandidates;
     pendingRemoteCandidates = [];
@@ -205,9 +288,14 @@ export function createRTCController(options = {}) {
     for (const candidate of queue) {
       try {
         log("[RTC] Añadiendo candidate remoto (buffered)…");
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        // candidate ya viene en formato RTCIceCandidateInit,
+        // podemos pasarlo directamente a addIceCandidate.
+        await pc.addIceCandidate(candidate);
       } catch (err) {
-        console.error("[RTC] Error al añadir ICE candidate remoto (buffered):", err);
+        console.error(
+          "[RTC] Error al añadir ICE candidate remoto (buffered):",
+          err
+        );
       }
     }
   }
@@ -245,7 +333,6 @@ export function createRTCController(options = {}) {
     isCaller = true;
     isStarted = true;
 
-
     // Asegurarnos de tener cámara/mic LOCAL (quien llama SÍ comparte algo)
     if (!localStream) {
       await startLocalMedia();
@@ -254,7 +341,15 @@ export function createRTCController(options = {}) {
 
     log("[RTC] Caller: creando offer…");
     const offer = await connection.createOffer();
+    log(
+      "[RTC] Caller: offer creada. sdp length =",
+      offer.sdp ? offer.sdp.length : 0
+    );
     await connection.setLocalDescription(offer);
+    log(
+      "[RTC] Caller: setLocalDescription(offer) OK. signalingState =",
+      connection.signalingState
+    );
 
     if (typeof sendSignal === "function") {
       log("[RTC] Caller: enviando offer");
@@ -284,21 +379,43 @@ export function createRTCController(options = {}) {
     isCaller = false;
     isStarted = true;
 
-    log("[RTC] Callee: recibiendo offer…");
+    log(
+      "[RTC] Callee: recibiendo offer… sdp length =",
+      sdp ? sdp.length : 0
+    );
     const desc = new RTCSessionDescription({ type: "offer", sdp });
     await connection.setRemoteDescription(desc);
+    log(
+      "[RTC] Callee: setRemoteDescription(offer) OK. signalingState =",
+      connection.signalingState
+    );
 
     // ⚠️ IMPORTANTE:
     // El CALLEE **NO** enciende cámara/mic automáticamente.
     // Solo adjunta pistas locales si YA tiene un stream local (por ejemplo,
     // si el usuario activó su propio micrófono/cámara manualmente).
     if (localStream) {
+      log(
+        "[RTC] Callee: ya hay localStream, adjuntando tracks."
+      );
       attachLocalTracks();
+    } else {
+      log(
+        "[RTC] Callee: sin localStream (modo solo receptor hasta que el usuario active su cámara/mic)."
+      );
     }
 
     log("[RTC] Callee: creando answer…");
     const answer = await connection.createAnswer();
+    log(
+      "[RTC] Callee: answer creada. sdp length =",
+      answer.sdp ? answer.sdp.length : 0
+    );
     await connection.setLocalDescription(answer);
+    log(
+      "[RTC] Callee: setLocalDescription(answer) OK. signalingState =",
+      connection.signalingState
+    );
 
     if (typeof sendSignal === "function") {
       log("[RTC] Callee: enviando answer");
@@ -317,7 +434,9 @@ export function createRTCController(options = {}) {
   // ------------------------------------------
   async function handleRemoteAnswer(sdp) {
     if (!pc) {
-      console.warn("[RTC] handleRemoteAnswer sin pc. Ignorando.");
+      console.warn(
+        "[RTC] handleRemoteAnswer sin pc. Ignorando."
+      );
       return;
     }
 
@@ -331,9 +450,16 @@ export function createRTCController(options = {}) {
       return;
     }
 
-    log("[RTC] Caller: recibiendo answer…");
+    log(
+      "[RTC] Caller: recibiendo answer… sdp length =",
+      sdp ? sdp.length : 0
+    );
     const desc = new RTCSessionDescription({ type: "answer", sdp });
     await pc.setRemoteDescription(desc);
+    log(
+      "[RTC] Caller: setRemoteDescription(answer) OK. signalingState =",
+      pc.signalingState
+    );
 
     // Ahora que tenemos remoteDescription, podemos volcar ICE pendientes
     await flushPendingRemoteCandidates();
@@ -344,23 +470,31 @@ export function createRTCController(options = {}) {
   // ------------------------------------------
   async function handleRemoteIceCandidate(candidate) {
     if (!candidate) {
-      log("[RTC] Candidate remoto null (fin de candidatos).");
+      log(
+        "[RTC] Candidate remoto null (fin de candidatos)."
+      );
       return;
     }
 
     // Si aún no hay PC o aún no tenemos remoteDescription,
     // lo guardamos en buffer para aplicarlo después
     if (!pc || !pc.remoteDescription) {
-      log("[RTC] handleRemoteIceCandidate: aún sin remoteDescription, bufereando candidate remoto.");
+      log(
+        "[RTC] handleRemoteIceCandidate: aún sin pc o sin remoteDescription, bufereando candidate remoto."
+      );
       pendingRemoteCandidates.push(candidate);
       return;
     }
 
     try {
       log("[RTC] Añadiendo candidate remoto…");
-      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      // Igual que en flushPendingRemoteCandidates: lo pasamos tal cual
+      await pc.addIceCandidate(candidate);
     } catch (err) {
-      console.error("[RTC] Error al añadir ICE candidate remoto:", err);
+      console.error(
+        "[RTC] Error al añadir ICE candidate remoto:",
+        err
+      );
     }
   }
 
@@ -375,22 +509,28 @@ export function createRTCController(options = {}) {
 
     switch (kind) {
       case "offer":
+        log("[RTC] handleSignalMessage: offer recibida.");
         if (msg.sdp) {
           await handleRemoteOffer(msg.sdp);
         }
         break;
       case "answer":
+        log("[RTC] handleSignalMessage: answer recibida.");
         if (msg.sdp) {
           await handleRemoteAnswer(msg.sdp);
         }
         break;
       case "ice":
+        log("[RTC] handleSignalMessage: ice recibida.");
         if (msg.candidate) {
           await handleRemoteIceCandidate(msg.candidate);
         }
         break;
       default:
-        log("[RTC] handleSignalMessage: kind desconocido:", kind);
+        log(
+          "[RTC] handleSignalMessage: kind desconocido:",
+          kind
+        );
         break;
     }
   }
@@ -407,6 +547,7 @@ export function createRTCController(options = {}) {
         pc.onicecandidate = null;
         pc.onconnectionstatechange = null;
         pc.oniceconnectionstatechange = null;
+        pc.onsignalingstatechange = null;
         pc.close();
       }
     } catch (err) {
@@ -415,6 +556,9 @@ export function createRTCController(options = {}) {
     pc = null;
 
     if (localStream) {
+      log(
+        "[RTC] stopAll(): deteniendo tracks locales."
+      );
       localStream.getTracks().forEach((t) => t.stop());
     }
     localStream = null;
@@ -438,6 +582,7 @@ export function createRTCController(options = {}) {
       hasRemoteStream: !!remoteStream,
       connectionState: pc ? pc.connectionState : "closed",
       iceConnectionState: pc ? pc.iceConnectionState : "closed",
+      signalingState: pc ? pc.signalingState : "closed",
     };
   }
 
