@@ -46,8 +46,11 @@ export function getOnlineLayoutHTML(DEBUG_PANEL_HTML = "") {
             <span class="online-btn-text">Rendirse</span>
           </button>
 
-          <!-- 🔘 NUEVO: Botones de micrófono y cámara -->
-          <div class="online-media-row" style="margin-top:10px; display:flex; flex-direction:column; gap:8px;">
+          <!-- 🔘 Botones de micrófono y cámara -->
+          <div
+            class="online-media-row"
+            style="margin-top:10px; display:flex; flex-direction:column; gap:8px;"
+          >
             <button class="online-btn" id="btn-toggle-mic">
               <span class="icon-xl">🎙️</span>
               <span class="online-btn-text">Micrófono</span>
@@ -59,13 +62,14 @@ export function getOnlineLayoutHTML(DEBUG_PANEL_HTML = "") {
             </button>
           </div>
 
-          <!-- 🔴 Vista previa de la cámara (LOCAL) -->
+          <!-- 🔴 CONTENEDOR CÁMARA LOCAL + CHAT + VIDEO REMOTO -->
           <div
-            id="video-preview-container"
-            style="margin-top:10px; display:flex; flex-direction:column; align-items:center; gap:6px;"
+            id="cam-local-container"
+            style="margin-top:10px; display:flex; flex-direction:column; align-items:center; gap:6px; position:relative;"
           >
+            <!-- Vista previa de la cámara LOCAL -->
             <video
-              id="video-preview"
+              id="video-local"
               autoplay
               playsinline
               muted
@@ -78,7 +82,7 @@ export function getOnlineLayoutHTML(DEBUG_PANEL_HTML = "") {
               "
             ></video>
 
-            <!-- 🔵 Video REMOTO -->
+            <!-- Video REMOTO -->
             <video
               id="video-remote"
               autoplay
@@ -118,11 +122,10 @@ export function getOnlineLayoutHTML(DEBUG_PANEL_HTML = "") {
             >
           </label>
 
-          <!-- --------------------------------------------
-               🔵 AQUÍ está el cambio solicitado:
-               Se añade la clase online-btn--disconnected
-               -------------------------------------------- -->
-          <button class="online-btn online-btn--disconnected" id="btn-ws-connect">
+          <button
+            class="online-btn online-btn--disconnected"
+            id="btn-ws-connect"
+          >
             Conectar WS
           </button>
 

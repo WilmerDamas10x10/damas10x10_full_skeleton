@@ -22,7 +22,7 @@ export const PROTO_V = 1;
 
 // Utils
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function jitter(ms, ratio = 0.25) {
   const delta = ms * ratio;
@@ -31,7 +31,11 @@ function jitter(ms, ratio = 0.25) {
 }
 
 function sanitizeRoom(s) {
-  return String(s || "sala1").trim().toLowerCase().replace(/\s+/g, "").slice(0, 48);
+  return String(s || "sala1")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .slice(0, 48);
 }
 
 // -------------------------------------------------
@@ -39,8 +43,13 @@ function sanitizeRoom(s) {
 // -------------------------------------------------
 function createBCTransport(room, onMessage, onStatus) {
   const r = sanitizeRoom(room);
-  if (typeof window === "undefined" || typeof window.BroadcastChannel !== "function") {
-    try { onStatus?.({ state: "unsupported", room: r }); } catch {}
+  if (
+    typeof window === "undefined" ||
+    typeof window.BroadcastChannel !== "function"
+  ) {
+    try {
+      onStatus?.({ state: "unsupported", room: r });
+    } catch {}
     return {
       send() {},
       close() {},
@@ -56,7 +65,9 @@ function createBCTransport(room, onMessage, onStatus) {
   let closed = false;
 
   function post(msg) {
-    try { ch.postMessage(msg); } catch {}
+    try {
+      ch.postMessage(msg);
+    } catch {}
   }
 
   // Anunciar presencia
@@ -66,7 +77,9 @@ function createBCTransport(room, onMessage, onStatus) {
 
   // Arranque
   announceHello();
-  try { onStatus?.({ state: "open", room: r, peers: peers.size }); } catch {}
+  try {
+    onStatus?.({ state: "open", room: r, peers: peers.size });
+  } catch {}
 
   ch.onmessage = (ev) => {
     const msg = ev?.data;
@@ -76,19 +89,25 @@ function createBCTransport(room, onMessage, onStatus) {
     if (msg.t === "hello" && msg.peerId && msg.peerId !== peerId) {
       if (!peers.has(msg.peerId)) {
         peers.add(msg.peerId);
-        try { onStatus?.({ state: "open", room: r, peers: peers.size }); } catch {}
+        try {
+          onStatus?.({ state: "open", room: r, peers: peers.size });
+        } catch {}
       }
       return;
     }
     if (msg.t === "bye" && msg.peerId && msg.peerId !== peerId) {
       if (peers.delete(msg.peerId)) {
-        try { onStatus?.({ state: "open", room: r, peers: peers.size }); } catch {}
+        try {
+          onStatus?.({ state: "open", room: r, peers: peers.size });
+        } catch {}
       }
       return;
     }
 
     // Mensaje de app
-    try { onMessage?.(msg); } catch {}
+    try {
+      onMessage?.(msg);
+    } catch {}
   };
 
   // Reanunciar cada cierto tiempo para mantener peers "vivos"
@@ -105,10 +124,18 @@ function createBCTransport(room, onMessage, onStatus) {
     close() {
       if (closed) return;
       closed = true;
-      try { clearInterval(helloInterval); } catch {}
-      try { post({ t: "bye", room: r, peerId }); } catch {}
-      try { ch.close(); } catch {}
-      try { onStatus?.({ state: "closed", room: r, peers: peers.size }); } catch {}
+      try {
+        clearInterval(helloInterval);
+      } catch {}
+      try {
+        post({ t: "bye", room: r, peerId });
+      } catch {}
+      try {
+        ch.close();
+      } catch {}
+      try {
+        onStatus?.({ state: "closed", room: r, peers: peers.size });
+      } catch {}
     },
   };
 }
@@ -119,10 +146,12 @@ function createBCTransport(room, onMessage, onStatus) {
 function createWSTransport(room, onMessage, onStatus, opts = {}) {
   const r = sanitizeRoom(room);
   const url = String(opts.wsUrl || "").trim();
-  const WS = (typeof window !== "undefined") ? window.WebSocket : null;
+  const WS = typeof window !== "undefined" ? window.WebSocket : null;
   if (!WS) {
     // Entorno sin WebSocket (muy raro en navegador)
-    try { onStatus?.({ state: "error", room: r }); } catch {}
+    try {
+      onStatus?.({ state: "error", room: r });
+    } catch {}
     return { send() {}, close() {} };
   }
 
@@ -131,14 +160,16 @@ function createWSTransport(room, onMessage, onStatus, opts = {}) {
   let attempt = 0;
 
   const BACKOFF = {
-    base: 400,    // ms
-    factor: 2.0,  // x
-    max: 5000,    // ms
+    base: 400, // ms
+    factor: 2.0, // x
+    max: 5000, // ms
   };
 
   async function connectLoop() {
     // Primer estado: connecting
-    try { onStatus?.({ state: "connecting", room: r }); } catch {}
+    try {
+      onStatus?.({ state: "connecting", room: r });
+    } catch {}
 
     while (!manualClose) {
       try {
@@ -146,8 +177,21 @@ function createWSTransport(room, onMessage, onStatus, opts = {}) {
       } catch (e) {
         // fallo al construir → esperar y reintentar
         attempt++;
-        const delay = jitter(clamp(BACKOFF.base * Math.pow(BACKOFF.factor, attempt - 1), BACKOFF.base, BACKOFF.max));
-        try { onStatus?.({ state: "retrying", room: r, attempt, delayMs: delay }); } catch {}
+        const delay = jitter(
+          clamp(
+            BACKOFF.base * Math.pow(BACKOFF.factor, attempt - 1),
+            BACKOFF.base,
+            BACKOFF.max
+          )
+        );
+        try {
+          onStatus?.({
+            state: "retrying",
+            room: r,
+            attempt,
+            delayMs: delay,
+          });
+        } catch {}
         await sleep(delay);
         continue;
       }
@@ -155,7 +199,9 @@ function createWSTransport(room, onMessage, onStatus, opts = {}) {
       // wiring
       ws.onopen = () => {
         attempt = 0;
-        try { onStatus?.({ state: "open", room: r }); } catch {}
+        try {
+          onStatus?.({ state: "open", room: r });
+        } catch {}
         // Hacemos JOIN para registrar sala en el relay
         try {
           ws.send(JSON.stringify({ t: "join", room: r, v: PROTO_V }));
@@ -169,24 +215,45 @@ function createWSTransport(room, onMessage, onStatus, opts = {}) {
         } catch {
           return;
         }
-        try { onMessage?.(msg); } catch {}
+        try {
+          onMessage?.(msg);
+        } catch {}
       };
 
       ws.onerror = () => {
         // Error transitorio; anunciamos "error" y forzamos cierre (para que onclose dispare retry)
-        try { onStatus?.({ state: "error", room: r }); } catch {}
-        try { ws.close(); } catch {}
+        try {
+          onStatus?.({ state: "error", room: r });
+        } catch {}
+        try {
+          ws.close();
+        } catch {}
       };
 
       ws.onclose = () => {
         if (manualClose) {
-          try { onStatus?.({ state: "closed", room: r }); } catch {}
+          try {
+            onStatus?.({ state: "closed", room: r });
+          } catch {}
           return;
         }
         // backoff y reintento
         attempt++;
-        const delay = jitter(clamp(BACKOFF.base * Math.pow(BACKOFF.factor, attempt - 1), BACKOFF.base, BACKOFF.max));
-        try { onStatus?.({ state: "retrying", room: r, attempt, delayMs: delay }); } catch {}
+        const delay = jitter(
+          clamp(
+            BACKOFF.base * Math.pow(BACKOFF.factor, attempt - 1),
+            BACKOFF.base,
+            BACKOFF.max
+          )
+        );
+        try {
+          onStatus?.({
+            state: "retrying",
+            room: r,
+            attempt,
+            delayMs: delay,
+          });
+        } catch {}
         setTimeout(() => {
           if (!manualClose) connectLoop();
         }, delay);
@@ -203,11 +270,15 @@ function createWSTransport(room, onMessage, onStatus, opts = {}) {
   return {
     send(obj) {
       if (!ws || ws.readyState !== 1 /* OPEN */) return;
-      try { ws.send(JSON.stringify(obj)); } catch {}
+      try {
+        ws.send(JSON.stringify(obj));
+      } catch {}
     },
     close() {
       manualClose = true;
-      try { ws?.close(); } catch {}
+      try {
+        ws?.close();
+      } catch {}
     },
   };
 }
@@ -217,12 +288,21 @@ function createWSTransport(room, onMessage, onStatus, opts = {}) {
 // -------------------------------------------------
 export function createTransport(kind, room, onMessage, onStatus, opts = {}) {
   if (kind === "bc") {
+    // Antes usábamos BroadcastChannel directamente.
+    // Ahora permitimos forzar WS (por ejemplo, para chat) aunque el modo sea "bc".
+    const useWSForChat = opts.forceWSForChat;
+    if (useWSForChat) {
+      // Reutilizamos el transporte WS, respetando opts.wsUrl si viene.
+      return createWSTransport(room, onMessage, onStatus, opts);
+    }
     return createBCTransport(room, onMessage, onStatus);
   }
+
   if (kind === "ws") {
-    // opts: { wsUrl }
+    // opts: { wsUrl, ... }
     return createWSTransport(room, onMessage, onStatus, opts);
   }
+
   console.warn("[transport] kind desconocido:", kind);
   return { send() {}, close() {} };
 }

@@ -1,0 +1,250 @@
+/* ===============================================
+   src/ui/pages/Online/ui/chat.panel.css
+   Estilos del panel de chat plegable (modo Online)
+   Cambios 2025-12-01:
+   - Layout vertical: botón "Chat" arriba, panel debajo.
+   - Frases rápidas en bloque compacto + "Ver más".
+   - Botón para añadir frases personalizadas.
+   - Tipografías un poco más grandes (~1.1rem en el texto).
+   =============================================== */
+
+.online-chat-panel {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.35rem;
+}
+
+/* Botón principal "Chat" */
+.online-chat-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding-inline: 0.6rem;
+  padding-block: 0.25rem;
+  font-size: 1.1rem;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.online-chat-toggle-label {
+  font-weight: 500;
+}
+
+.online-chat-toggle-arrow {
+  font-size: 0.9rem;
+  opacity: 0.7;
+}
+
+.online-chat-toggle--open .online-chat-toggle-arrow {
+  transform: rotate(180deg);
+}
+
+/* Badge de no leídos */
+.online-chat-unread {
+  min-width: 1.2rem;
+  min-height: 1.2rem;
+  padding: 0 0.25rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #e53935;
+  color: #fff;
+}
+
+/* ===============================================
+   CUERPO DEL CHAT
+   =============================================== */
+
+.online-chat-body {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  background: rgba(0, 0, 0, 0.78);
+  border-radius: 0.55rem;
+  padding: 0.45rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+
+  min-width: 220px;
+  max-width: 280px;
+  max-height: 280px;
+  overflow: hidden;
+}
+
+/* ===============================================
+   LISTA DE MENSAJES
+   =============================================== */
+
+.online-chat-messages {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 0.15rem 0.1rem 0.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  margin-bottom: 0.3rem;
+}
+
+.online-chat-message {
+  display: flex;
+  flex-direction: column;
+  max-width: 100%;
+}
+
+.online-chat-message-me {
+  align-items: flex-end;
+}
+
+.online-chat-message-remote {
+  align-items: flex-start;
+}
+
+.online-chat-bubble {
+  display: inline-block;
+  padding: 0.26rem 0.55rem;
+  border-radius: 0.7rem;
+  font-size: 1.1rem;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.online-chat-message-me .online-chat-bubble {
+  background: #1976d2;
+  color: #fff;
+}
+
+.online-chat-message-remote .online-chat-bubble {
+  background: #eeeeee;
+  color: #222;
+}
+
+.online-chat-meta {
+  font-size: 0.85rem;
+  opacity: 0.75;
+  margin-top: 0.05rem;
+}
+
+/* ===============================================
+   FRASES RÁPIDAS
+   =============================================== */
+
+.online-chat-quick-wrap-vertical {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.3rem;
+}
+
+.online-chat-quick-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+/* Botones de frases rápidas */
+.online-chat-quick-btn {
+  font-size: 0.95rem;
+  padding: 0.18rem 0.55rem;
+  border-radius: 999px;
+  white-space: nowrap;
+  border: none;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+/* Botón "Ver más / Ver menos" */
+.online-chat-vermas-btn {
+  align-self: flex-start;
+  font-size: 0.9rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+/* Botón "+ Añadir frase" */
+.online-chat-add-btn {
+  align-self: flex-start;
+  font-size: 0.9rem;
+  padding: 0.2rem 0.7rem;
+  border-radius: 999px;
+  border: 1px dashed rgba(255, 255, 255, 0.35);
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+}
+
+/* ===============================================
+   INPUT + BOTÓN ENVIAR
+   =============================================== */
+
+.online-chat-form {
+  display: flex;
+  flex-direction: row;
+  gap: 0.25rem;
+  margin-top: 0.15rem;
+}
+
+.online-chat-input {
+  flex: 1 1 auto;
+  border-radius: 999px;
+  border: none;
+  font-size: 1.1rem;
+  padding: 0.25rem 0.6rem;
+  outline: none;
+}
+
+.online-chat-send {
+  font-size: 0.95rem;
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+/* ===============================================
+   RESPONSIVE
+   =============================================== */
+
+@media (max-width: 640px) {
+  .online-chat-body {
+    min-width: 200px;
+    max-width: 250px;
+    max-height: 240px;
+  }
+
+  .online-chat-toggle {
+    font-size: 1.0rem;
+  }
+
+  .online-chat-bubble {
+    font-size: 1.0rem;
+  }
+}
+
+.online-chat-body {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  background: rgba(0, 0, 0, 0.78);
+  border-radius: 0.55rem;
+  padding: 0.45rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+
+  min-width: 220px;
+  max-width: 280px;
+  max-height: 280px;
+  overflow: hidden;
+}
+
+/* 🔒 MUY IMPORTANTE: si está hidden, se oculta de verdad */
+.online-chat-body[hidden] {
+  display: none !important;
+}

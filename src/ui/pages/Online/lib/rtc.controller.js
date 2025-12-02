@@ -36,24 +36,22 @@
 //
 // ===============================================
 
-// ⚠️ Aquí configuramos STUN + TURN.
-// - STUN: para intentar conexión directa P2P.
-// - TURN: “plan B” cuando las redes son muy restrictivas.
-//
-// IMPORTANTE: reemplaza TU-SERVIDOR-TURN / usuario / password
-// por los datos reales de tu servidor TURN (coturn o similar).
+// ⚠️ Configuración STUN + TURN real (Xirsys)
 const DEFAULT_RTC_CONFIG = {
   iceServers: [
-    // STUN público. Para LAN va sobrado y en muchas WAN funciona.
-    { urls: "stun:stun.l.google.com:19302" },
-
-    // TURN (plantilla de ejemplo; pon aquí tu servidor real).
-    // Aunque este host no exista todavía, no rompe nada:
-    // el navegador intentará usarlo, y si falla seguirá usando STUN.
     {
-      urls: "turn:TU-SERVIDOR-TURN:3478",
-      username: "TU_USUARIO_TURN",
-      credential: "TU_PASSWORD_TURN",
+      urls: [
+        "stun:sp-turn1.xirsys.com",
+        "turn:sp-turn1.xirsys.com:80?transport=udp",
+        "turn:sp-turn1.xirsys.com:3478?transport=udp",
+        "turn:sp-turn1.xirsys.com:80?transport=tcp",
+        "turn:sp-turn1.xirsys.com:3478?transport=tcp",
+        "turns:sp-turn1.xirsys.com:443?transport=tcp",
+        "turns:sp-turn1.xirsys.com:5349?transport=tcp",
+      ],
+      username:
+        "CgkvbjKbtzSqX12B2fBRnWmZeQvTkY0e0QRxerUk1JeKliV-9Mvo4AWYzhvtP8PnAAAAAGkr04F3aWxtZXI=",
+      credential: "ec30043c-cdab-11f0-8393-0242ac120004",
     },
   ],
 };

@@ -7,6 +7,7 @@
 // Panel DEBUG gateado. Toolbar opcional (carga dinámica). Replay asistido.
 // Botón “Rotar tablero” con persistencia por sala/dispositivo.
 // WebRTC: video/audio con dos <video> (local + remoto).
+// Chat de texto plegable debajo de la cámara local.
 // ================================
 
 import {
@@ -72,6 +73,10 @@ import { setupOnlineButtons } from "../ui.buttons.js";
 import { setupMediaButtons } from "../ui.mediaButtons.js";
 import { createRTCController } from "./rtc.controller.js";
 
+// 🆕 Chat de texto
+import { createChatController } from "./chat.controller.js";
+import { mountOnlineChatPanel } from "../ui/chat.panel.js";
+
 // --- Utils locales ---
 const sanitizeRoom = (s) =>
   String(s || "sala1").trim().toLowerCase().replace(/\s+/g, "").slice(0, 48);
@@ -107,14 +112,8 @@ export default function mountOnline(container) {
   ensureGlobalFX();
   initEditorSFX();
 
-  // ——— Overlay de desbloqueo de audio
-  let removeSFXUnlock = createSFXUnlockOverlay({
-    onUnlocked: () => {
-      try {
-        initEditorSFX();
-      } catch {}
-    },
-  });
+  // Declaramos aquí para usarlo más abajo (BC/WS)
+  let removeSFXUnlock = null;
 
   // ==== Flags de entorno (GOLDEN/DEBUG) ====
   const DEV_QUERY = /[?&]dev=1\b/i.test(location.search);
@@ -470,6 +469,61 @@ export default function mountOnline(container) {
     log: (...args) => console.log("[RTC]", ...args),
   });
 
+  // 🆕 CHAT: controlador de chat de texto (usa el mismo transporte netSend)
+  const chatController = createChatController({
+    sendSignal: (payload) => {
+      // op:"chat" para distinguirlo de rtc, restart, etc.
+      netSend({
+        t: "ui",
+        op: "chat",
+        payload,
+      });
+    },
+    log: (...args) => console.log("[CHAT]", ...args),
+  });
+
+  // Montar la ventanita de chat en la columna WS (derecha),
+  // arriba del primer control (WS URL)
+  const wsColumn = container.querySelector(".online-column--ws") || container;
+
+  if (wsColumn) {
+    const chatMount = document.createElement("div");
+    chatMount.id = "online-chat-right";
+    chatMount.style.marginBottom = "8px";
+
+    const firstChild = wsColumn.firstElementChild;
+    if (firstChild) {
+      wsColumn.insertBefore(chatMount, firstChild);
+    } else {
+      wsColumn.appendChild(chatMount);
+    }
+
+    mountOnlineChatPanel({
+      rootElement: chatMount,
+      controller: chatController,
+    });
+    // 👇 Importante: NO llamamos a chatController.open()
+    // El chat se queda cerrado por defecto y se abre solo
+    // cuando pulsas el botón "💬 Chat".
+  }
+
+  // ——— Overlay de desbloqueo de audio
+  removeSFXUnlock = createSFXUnlockOverlay({
+    onUnlocked: () => {
+      // Desbloquea SFX del juego
+      try {
+        initEditorSFX();
+      } catch {}
+
+      // 🔔 Desbloquea también el sonido del chat
+      try {
+        if (chatController && typeof chatController.primeSound === "function") {
+          chatController.primeSound();
+        }
+      } catch {}
+    },
+  });
+
   // ========================================
   // ACTIVAR BOTONES DE CÁMARA / MICRÓFONO
   // ========================================
@@ -543,26 +597,31 @@ export default function mountOnline(container) {
   // ===== Conectividad (labels)
   function handleBCStatus(s) {
     if (!$bcStatus) return;
+
     if (s.state === "unsupported") {
       $bcStatus.textContent = "BC: No soportado";
       return;
     }
+
     if (s.state === "closed") {
       $bcStatus.textContent = "BC: Cerrado";
       return;
     }
+
     if (s.state === "open") {
       const peers = Math.max(0, s.peers ?? 0);
       $bcStatus.textContent = `BC: Conectado (${s.room}) · pares: ${peers}`;
-      try {
-        removeSFXUnlock?.();
-      } catch {}
+      // ⚠️ Ya NO removemos el overlay aquí;
+      // el usuario debe hacer clic para desbloquear audio (SFX + chat).
+      // Esto garantiza que el beep del chat quede habilitado correctamente.
       // BC no garantiza 'peers' por mensaje; si no hay ?me=, aplica fallback dispositivo
       autoAssignSide({ peers }); // usa peers si viene, sino usa device fallback internamente
       setTurnText();
       updateLock();
       return;
     }
+
+    // Otros estados (inicial, conectando, etc.)
     $bcStatus.textContent = "BC: …";
   }
 
@@ -597,9 +656,9 @@ export default function mountOnline(container) {
         $btnWSConn.classList.remove("online-btn--disconnected");
         $btnWSConn.classList.add("online-btn--connected");
         $btnWSConn.textContent = "Conectado";
-        try {
-          removeSFXUnlock?.();
-        } catch {}
+        // ⚠️ Igual que en BC, aquí ya NO removemos el overlay;
+        // así el usuario tiene que tocar para desbloquear audio
+        // y eso habilita tanto SFX como el beep del chat.
         // ✅ En lugar de imponer nuestro tablero, pedimos el estado a la sala
         netSend({ t: "state_req" });
         // Anuncia presencia cuando el socket ya está abierto
@@ -614,8 +673,6 @@ export default function mountOnline(container) {
     // Actualizar bloqueo de tablero según estado WS
     updateLock();
 
-    // Si el estado es 'open', 'connecting', 'retrying', 'error' o 'closed',
-    // ya se manejó arriba (UI + bloqueo).
     if (
       s.state === "open" ||
       s.state === "connecting" ||
@@ -800,6 +857,18 @@ export default function mountOnline(container) {
   };
   const base_getBoard = () => board;
 
+
+
+
+
+
+
+
+
+
+
+
+
   const baseCtx = {
     SIZE,
     container,
@@ -860,6 +929,16 @@ export default function mountOnline(container) {
     },
   };
 
+
+
+
+
+
+
+
+
+
+  
   // Helper para reinicio duro (usado por handshake y por empate/rendición)
   function hardRestart() {
     board = sanitizeBoard(startBoard());
@@ -957,6 +1036,82 @@ export default function mountOnline(container) {
     }
     return out;
   }
+
+// Halo de selección REMOTO/LOCAL independiente del motor
+let __remoteHalo = null;
+
+function highlightSelected(pos) {
+  if (!$board) return;
+  if (!pos || !Array.isArray(pos) || pos.length !== 2) return;
+
+  let [r, c] = pos;
+
+  // Coordenadas lógicas válidas 0..9
+  if (!safeCell([r, c])) return;
+
+  // 🔁 Ajustar a la orientación visual actual del tablero
+  // Si las negras están abajo (view-negro), el tablero se ve "al revés",
+  // así que espejamos las coordenadas.
+  try {
+    if (shouldShowNegroBottom()) {
+      r = SIZE - 1 - r;
+      c = SIZE - 1 - c;
+    }
+  } catch {
+    // si algo falla, seguimos con r,c originales
+  }
+
+  // Crear el overlay una sola vez
+  if (!__remoteHalo) {
+    __remoteHalo = document.createElement("div");
+    __remoteHalo.className = "remote-select-halo";
+    __remoteHalo.style.position = "absolute";
+    __remoteHalo.style.pointerEvents = "none";
+    __remoteHalo.style.boxSizing = "border-box";
+    __remoteHalo.style.borderRadius = "50%";
+    __remoteHalo.style.zIndex = "5";
+    __remoteHalo.style.transition =
+      "left 80ms ease-out, top 80ms ease-out, width 80ms ease-out, height 80ms ease-out";
+
+    // Aseguramos que #board sea posicionable
+    const cs = window.getComputedStyle($board);
+    if (cs.position === "static") {
+      $board.style.position = "relative";
+    }
+
+    $board.appendChild(__remoteHalo);
+  }
+
+  // Geometría del tablero: 10x10
+  const rect = $board.getBoundingClientRect();
+  const cellW = rect.width / SIZE;
+  const cellH = rect.height / SIZE;
+
+  __remoteHalo.style.width = `${cellW}px`;
+  __remoteHalo.style.height = `${cellH}px`;
+  __remoteHalo.style.left = `${c * cellW}px`;
+  __remoteHalo.style.top = `${r * cellH}px`;
+
+  // Color del aro según la ficha en coordenadas lógicas originales
+  let ch = "";
+  try {
+    ch = board?.[pos[0]]?.[pos[1]] ?? "";
+  } catch {}
+
+  let borderColor = "#000"; // por defecto negro
+
+  if (ch) {
+    const col = colorOf(ch);
+    // En tu descripción:
+    // - ficha blanca → aro negro
+    // - ficha negra → aro blanco
+    borderColor = (col === COLOR.NEGRO) ? "#fff" : "#000";
+  }
+
+  // Grosor proporcional al tamaño de celda
+  const thickness = Math.max(2, Math.round(cellW * 0.07));
+  __remoteHalo.style.border = `${thickness}px solid ${borderColor}`;
+}
 
   // ===== Recepción y aplicación de mensajes remotos
   function handleNetMessage(msg) {
@@ -1057,7 +1212,7 @@ export default function mountOnline(container) {
       if (isSpectator) return;
 
       const accept = confirm(
-        "El rival propone EMPATE. ¿Aceptar tablas?"
+        "Tu rival propone EMPATE. ¿Aceptar tablas?"
       );
       netSend({
         t: "ui",
@@ -1089,6 +1244,24 @@ export default function mountOnline(container) {
         "Tu rival se ha rendido. Has ganado la partida. Comienza una nueva partida."
       );
       hardRestart();
+      return;
+    }
+
+// 🟢 NUEVO: Aro de selección remoto
+if (msg.t === "ui" && msg.op === "select" && msg.pos) {
+  console.log("[Online] select RECV", msg.pos);
+  highlightSelected(msg.pos);
+  return;
+}
+
+
+    // 🆕 CHAT DE TEXTO (t:"ui", op:"chat")
+    if (msg.t === "ui" && msg.op === "chat" && msg.payload) {
+      try {
+        chatController.handleSignalMessage(msg.payload);
+      } catch (e) {
+        console.warn("[Online][CHAT] Error manejando mensaje:", e);
+      }
       return;
     }
 
@@ -1367,20 +1540,38 @@ export default function mountOnline(container) {
       controller,
       getPlacing: () => placing,
 
-      onCellClick: (r, c) => {
-        if (placing) {
-          const next = clone(board);
-          next[r][c] = placing === "x" ? "" : placing;
-          board = sanitizeBoard(next);
-          controller.setBoard(board);
-          render();
-          baseCtx.paintState();
-          netSendState();
-          syncMon.onLocalChange?.();
-          return true;
-        }
-        return false;
-      },
+onCellClick: (r, c) => {
+  if (placing) {
+    const next = clone(board);
+    next[r][c] = placing === "x" ? "" : placing;
+    board = sanitizeBoard(next);
+    controller.setBoard(board);
+    render();
+    baseCtx.paintState();
+    netSendState();
+    syncMon.onLocalChange?.();
+    return true;
+  }
+
+  const pos = [r, c];
+
+  console.log("[Online] select SEND", pos);
+
+  netSend({
+    t: "ui",
+    op: "select",
+    pos,
+  });
+
+  highlightSelected(pos);
+
+  return true;
+},
+
+
+  
+
+
 
       onQuietMove: (from, to) => {
         if (!safeCell(from) || !safeCell(to)) return;
