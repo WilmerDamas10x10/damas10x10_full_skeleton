@@ -293,7 +293,7 @@ export function createTransport(kind, room, onMessage, onStatus, opts = {}) {
     const useWSForChat = opts.forceWSForChat;
     if (useWSForChat) {
       // Reutilizamos el transporte WS, respetando opts.wsUrl si viene.
-      return createWSTransport(room, onMessage, onStatus, opts);
+      return createWSTransport(room, onMessage, sonStatus, opts);
     }
     return createBCTransport(room, onMessage, onStatus);
   }

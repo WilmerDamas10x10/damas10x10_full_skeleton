@@ -12,8 +12,8 @@
     inset: "-3px",
     borderRadius: "14px",
     pointerEvents: "none",
-    boxShadow: "0 0 10px 3px rgba(255, 255, 0, 0.75)",
-    opacity: "0.9",
+   boxShadow: "0 0 10px 3px rgba(255, 255, 0, 0.9)", // un poco más intenso
+  opacity: "1",                                      // un pelín más visible
     transition: "box-shadow 180ms ease-out, opacity 180ms ease-out",
   };
 

@@ -69,9 +69,15 @@ import {
 import { createTransport, PROTO_V } from "./transport.js";
 import { createSyncMonitor } from "./sync.js";
 import { getOnlineLayoutHTML } from "../ui.layout.js";
-import { setupOnlineButtons } from "../ui.buttons.js";
+import {
+  setupOnlineButtons,
+  setupDrawAndResignButtons,
+} from "../ui.buttons.js";
 import { setupMediaButtons } from "../ui.mediaButtons.js";
 import { createRTCController } from "./rtc.controller.js";
+import { getDebugPanelHTML, setupDebugPanel } from "../ui.debug.js";
+// ✅ Reutilizamos helpers de depuración ya existentes
+import { boardToAscii as boardToAsciiDebug } from "./debug.js";
 
 // 🆕 Chat de texto
 import { createChatController } from "./chat.controller.js";
@@ -126,36 +132,8 @@ export default function mountOnline(container) {
     /[?&]debug=1\b/i.test(location.search) ||
     localStorage.getItem("D10_DEBUG") === "1";
 
-  // Panel DEBUG gateado
-  const DEBUG_PANEL_HTML = DEBUG_ENABLED
-    ? `
-      <details class="card" style="padding:10px 12px; margin-top:8px;">
-        <summary class="btn btn--subtle" style="cursor:pointer;">DEBUG · Cargar tablero</summary>
-        <div class="row" style="gap:12px; margin-top:8px; align-items:flex-start; flex-wrap:wrap;">
-          <textarea id="dbg-board-text" rows="10" cols="34" style="font-family:monospace; line-height:1.25; resize:vertical;"></textarea>
-          <div class="col" style="gap:8px; min-width:220px;">
-            <label class="btn btn--subtle">Turno:
-              <select id="dbg-turn" class="btn" style="margin-left:6px;">
-                <option value="R">R</option>
-                <option value="N">N</option>
-              </select>
-            </label>
-
-            <label class="btn btn--subtle" title="Si se pega un tablero mal alineado, limpia piezas en casillas claras">
-              <input type="checkbox" id="dbg-force-parity" style="margin-right:6px;">
-              Forzar casillas válidas (oscuras)
-            </label>
-
-            <div class="row" style="gap:8px; flex-wrap:wrap;">
-              <button class="btn" id="dbg-apply-local" title="Aplica sólo en esta pestaña">Aplicar (solo aquí)</button>
-              <button class="btn" id="dbg-apply-send"  title="Aplica aquí y envía snapshot a la sala">Aplicar y ENVIAR</button>
-            </div>
-            <small class="muted">Formato: 10×10 (r,n,R,N, . / - / 0) o JSON 10×10.</small>
-          </div>
-        </div>
-      </details>
-  `
-    : ``;
+  // Panel DEBUG gateado (HTML viene de módulo externo)
+  const DEBUG_PANEL_HTML = getDebugPanelHTML(DEBUG_ENABLED);
 
   // === Render del layout HTML ===
   container.innerHTML = getOnlineLayoutHTML(DEBUG_PANEL_HTML);
@@ -390,6 +368,42 @@ export default function mountOnline(container) {
   const $btnWSConn = container.querySelector("#btn-ws-connect");
   const $wsStatus = container.querySelector("#ws-status");
 
+  // ================================
+  // 🟢 Enviar selección al otro lado
+  // ================================
+  if ($board) {
+    $board.addEventListener("pointerdown", (ev) => {
+      try {
+        // Buscar la casilla [data-r][data-c] donde se hizo clic
+        const cell = ev.target.closest("[data-r][data-c]");
+        if (!cell || !$board.contains(cell)) return;
+
+        const rAttr = cell.getAttribute("data-r");
+        const cAttr = cell.getAttribute("data-c");
+        if (rAttr == null || cAttr == null) return;
+
+        const r = Number(rAttr);
+        const c = Number(cAttr);
+        if (!Number.isInteger(r) || !Number.isInteger(c)) return;
+
+        // Solo si hay una pieza en esa casilla
+        const piece = cell.querySelector(".piece");
+        if (!piece) return;
+
+        // Enviamos posición lógica (r,c) al resto de la sala
+        netSend({
+          t: "ui",
+          op: "select",
+          pos: [r, c],
+        });
+
+        console.log("[Online] select SEND (pointerdown)", [r, c]);
+      } catch (e) {
+        console.warn("[Online] Error enviando select remoto:", e);
+      }
+    });
+  }
+
   // 🎥 Refs para video local y remoto
   const $videoLocal = container.querySelector("#video-local");
   const $videoRemote = container.querySelector("#video-remote");
@@ -502,9 +516,6 @@ export default function mountOnline(container) {
       rootElement: chatMount,
       controller: chatController,
     });
-    // 👇 Importante: NO llamamos a chatController.open()
-    // El chat se queda cerrado por defecto y se abre solo
-    // cuando pulsas el botón "💬 Chat".
   }
 
   // ——— Overlay de desbloqueo de audio
@@ -535,9 +546,8 @@ export default function mountOnline(container) {
 
   if ($wsUrl) $wsUrl.value = WS_URL_FOR_QUERY;
 
-  // Helpers DEBUG (texto <-> tablero)
-  const boardToAscii = (b) =>
-    b.map((row) => row.map((x) => cellChar(x)).join("")).join("\n");
+  // Helpers DEBUG (texto <-> tablero) — usamos debug.js
+  const boardToAscii = (b) => boardToAsciiDebug(b, cellChar);
   function countPieces(b) {
     let r = 0,
       n = 0,
@@ -555,44 +565,6 @@ export default function mountOnline(container) {
     }
     return { r, n, R, N, total: r + n + R + N };
   }
-  function parseTextBoard(text) {
-    const t = (text || "").trim();
-    if (!t) throw new Error("Texto vacío");
-    if (t.startsWith("[") || t.startsWith("{")) {
-      const data = JSON.parse(t);
-      if (!Array.isArray(data) || data.length !== SIZE)
-        throw new Error("JSON debe ser 10 filas");
-      const out = Array.from({ length: SIZE }, (_, r) =>
-        Array.from({ length: SIZE }, (_, c) => {
-          const v = (data[r][c] ?? "").toString();
-          const ch = v === "." || v === "-" || v === "0" ? "" : v;
-          return ch;
-        })
-      );
-      return out;
-    }
-    const lines = t.split(/\r?\n/).map((s) => s.trim());
-    if (lines.length !== SIZE)
-      throw new Error("Debes ingresar exactamente 10 líneas");
-    const grid = lines.map((line) => {
-      if (line.length !== SIZE)
-        throw new Error("Cada línea debe tener 10 caracteres");
-      return line
-        .split("")
-        .map((ch) => (ch === "." || ch === "-" || ch === "0" ? "" : ch));
-    });
-    return grid;
-  }
-
-  // Prefill DEBUG si existe panel
-  const $dbgText = container.querySelector("#dbg-board-text");
-  const $dbgTurn = container.querySelector("#dbg-turn");
-  const $dbgApply = container.querySelector("#dbg-apply-local");
-  const $dbgSend = container.querySelector("#dbg-apply-send");
-  const $dbgForce = container.querySelector("#dbg-force-parity");
-  if ($dbgText) $dbgText.value = boardToAscii(board);
-  if ($dbgTurn)
-    $dbgTurn.value = turn === COLOR.ROJO ? "R" : "N";
 
   // ===== Conectividad (labels)
   function handleBCStatus(s) {
@@ -611,9 +583,6 @@ export default function mountOnline(container) {
     if (s.state === "open") {
       const peers = Math.max(0, s.peers ?? 0);
       $bcStatus.textContent = `BC: Conectado (${s.room}) · pares: ${peers}`;
-      // ⚠️ Ya NO removemos el overlay aquí;
-      // el usuario debe hacer clic para desbloquear audio (SFX + chat).
-      // Esto garantiza que el beep del chat quede habilitado correctamente.
       // BC no garantiza 'peers' por mensaje; si no hay ?me=, aplica fallback dispositivo
       autoAssignSide({ peers }); // usa peers si viene, sino usa device fallback internamente
       setTurnText();
@@ -656,9 +625,6 @@ export default function mountOnline(container) {
         $btnWSConn.classList.remove("online-btn--disconnected");
         $btnWSConn.classList.add("online-btn--connected");
         $btnWSConn.textContent = "Conectado";
-        // ⚠️ Igual que en BC, aquí ya NO removemos el overlay;
-        // así el usuario tiene que tocar para desbloquear audio
-        // y eso habilita tanto SFX como el beep del chat.
         // ✅ En lugar de imponer nuestro tablero, pedimos el estado a la sala
         netSend({ t: "state_req" });
         // Anuncia presencia cuando el socket ya está abierto
@@ -857,18 +823,6 @@ export default function mountOnline(container) {
   };
   const base_getBoard = () => board;
 
-
-
-
-
-
-
-
-
-
-
-
-
   const baseCtx = {
     SIZE,
     container,
@@ -929,16 +883,6 @@ export default function mountOnline(container) {
     },
   };
 
-
-
-
-
-
-
-
-
-
-  
   // Helper para reinicio duro (usado por handshake y por empate/rendición)
   function hardRestart() {
     board = sanitizeBoard(startBoard());
@@ -1037,81 +981,90 @@ export default function mountOnline(container) {
     return out;
   }
 
-// Halo de selección REMOTO/LOCAL independiente del motor
-let __remoteHalo = null;
+  // Halo de selección REMOTO/LOCAL independiente del motor
+  let __remoteHalo = null;
 
-function highlightSelected(pos) {
-  if (!$board) return;
-  if (!pos || !Array.isArray(pos) || pos.length !== 2) return;
+  /**
+   * Dibuja un aro alrededor de la casilla (r,c) seleccionada.
+   * Usa la celda real [data-r][data-c] para que coincida EXACTO
+   * con la pieza, respetando cualquier orientación/transform.
+   *
+   * @param {[number, number]} pos Coordenadas lógicas [r,c] 0..9
+   */
+  function highlightSelected(pos) {
+    if (!$board) return;
+    if (!pos || !Array.isArray(pos) || pos.length !== 2) return;
 
-  let [r, c] = pos;
+    const [r, c] = pos;
+    if (!safeCell([r, c])) return;
 
-  // Coordenadas lógicas válidas 0..9
-  if (!safeCell([r, c])) return;
-
-  // 🔁 Ajustar a la orientación visual actual del tablero
-  // Si las negras están abajo (view-negro), el tablero se ve "al revés",
-  // así que espejamos las coordenadas.
-  try {
-    if (shouldShowNegroBottom()) {
-      r = SIZE - 1 - r;
-      c = SIZE - 1 - c;
+    // Buscar la celda DOM exacta
+    const cell = $board.querySelector(
+      `[data-r="${r}"][data-c="${c}"]`
+    );
+    if (!cell) {
+      console.warn("[Online] highlightSelected: no se encontró celda para", {
+        r,
+        c,
+      });
+      return;
     }
-  } catch {
-    // si algo falla, seguimos con r,c originales
-  }
 
-  // Crear el overlay una sola vez
-  if (!__remoteHalo) {
-    __remoteHalo = document.createElement("div");
-    __remoteHalo.className = "remote-select-halo";
-    __remoteHalo.style.position = "absolute";
-    __remoteHalo.style.pointerEvents = "none";
-    __remoteHalo.style.boxSizing = "border-box";
-    __remoteHalo.style.borderRadius = "50%";
-    __remoteHalo.style.zIndex = "5";
-    __remoteHalo.style.transition =
-      "left 80ms ease-out, top 80ms ease-out, width 80ms ease-out, height 80ms ease-out";
+    // Crear el halo una sola vez
+    if (!__remoteHalo) {
+      __remoteHalo = document.createElement("div");
+      const s = __remoteHalo.style;
 
-    // Aseguramos que #board sea posicionable
-    const cs = window.getComputedStyle($board);
+      s.position = "absolute";
+      s.inset = "0"; // ocupa toda la celda
+      s.pointerEvents = "none";
+      s.boxSizing = "border-box";
+      s.borderRadius = "50%";
+      s.zIndex = "5";
+      s.transition = "all 80ms ease-out";
+
+      // Fonde suave verde translúcido
+      s.backgroundColor = "rgba(0, 255, 0, 0.14)";
+    }
+
+    // Asegurar que la celda pueda alojar hijos posicionados
+    const cs = window.getComputedStyle(cell);
     if (cs.position === "static") {
-      $board.style.position = "relative";
+      cell.style.position = "relative";
     }
 
-    $board.appendChild(__remoteHalo);
+    // Calcular grosor del borde en función del ancho de la celda
+    const rect = cell.getBoundingClientRect();
+    const cellW = rect.width || (cell.offsetWidth || 40);
+    const thickness = Math.max(3, Math.round(cellW * 0.09));
+
+    // Elegir color del borde según la pieza (negro/blanco)
+    let ch = "";
+    try {
+      ch = board?.[r]?.[c] ?? "";
+    } catch {}
+
+    let borderColor = "#00ff00"; // fallback verde
+    if (ch) {
+      const col = colorOf(ch);
+      borderColor = col === COLOR.NEGRO ? "#ffffff" : "#000000";
+    }
+
+    __remoteHalo.style.border = `${thickness}px solid ${borderColor}`;
+   __remoteHalo.style.boxShadow =
+      "0 0 8px 3px rgba(0, 255, 0, 0.5)";
+
+    
+    // Mover el halo a la nueva celda
+    if (__remoteHalo.parentElement !== cell) {
+      try {
+        __remoteHalo.parentElement?.removeChild(__remoteHalo);
+      } catch {}
+      cell.appendChild(__remoteHalo);
+    }
+
+    console.log("[Online] highlightSelected()", { r, c });
   }
-
-  // Geometría del tablero: 10x10
-  const rect = $board.getBoundingClientRect();
-  const cellW = rect.width / SIZE;
-  const cellH = rect.height / SIZE;
-
-  __remoteHalo.style.width = `${cellW}px`;
-  __remoteHalo.style.height = `${cellH}px`;
-  __remoteHalo.style.left = `${c * cellW}px`;
-  __remoteHalo.style.top = `${r * cellH}px`;
-
-  // Color del aro según la ficha en coordenadas lógicas originales
-  let ch = "";
-  try {
-    ch = board?.[pos[0]]?.[pos[1]] ?? "";
-  } catch {}
-
-  let borderColor = "#000"; // por defecto negro
-
-  if (ch) {
-    const col = colorOf(ch);
-    // En tu descripción:
-    // - ficha blanca → aro negro
-    // - ficha negra → aro blanco
-    borderColor = (col === COLOR.NEGRO) ? "#fff" : "#000";
-  }
-
-  // Grosor proporcional al tamaño de celda
-  const thickness = Math.max(2, Math.round(cellW * 0.07));
-  __remoteHalo.style.border = `${thickness}px solid ${borderColor}`;
-}
 
   // ===== Recepción y aplicación de mensajes remotos
   function handleNetMessage(msg) {
@@ -1247,13 +1200,12 @@ function highlightSelected(pos) {
       return;
     }
 
-// 🟢 NUEVO: Aro de selección remoto
-if (msg.t === "ui" && msg.op === "select" && msg.pos) {
-  console.log("[Online] select RECV", msg.pos);
-  highlightSelected(msg.pos);
-  return;
-}
-
+    // 🟢 Aro de selección remoto
+    if (msg.t === "ui" && msg.op === "select" && msg.pos) {
+      console.log("[Online] select RECV", msg.pos);
+      highlightSelected(msg.pos);
+      return;
+    }
 
     // 🆕 CHAT DE TEXTO (t:"ui", op:"chat")
     if (msg.t === "ui" && msg.op === "chat" && msg.payload) {
@@ -1443,10 +1395,11 @@ if (msg.t === "ui" && msg.op === "select" && msg.pos) {
 
   // ===== DEBUG — consola
   const ALLOWED = new Set(["r", "n", "R", "N"]);
+
   window.__D10 = {
     fen() {
       const rows = board
-        .map((row) => row.map(cellChar).join(""))
+        .map((row) => row.map((x) => cellChar(x)).join(""))
         .join("\n");
       const t = turn === COLOR.ROJO ? "R" : "N";
       return rows + "\n" + t;
@@ -1540,38 +1493,38 @@ if (msg.t === "ui" && msg.op === "select" && msg.pos) {
       controller,
       getPlacing: () => placing,
 
-onCellClick: (r, c) => {
-  if (placing) {
-    const next = clone(board);
-    next[r][c] = placing === "x" ? "" : placing;
-    board = sanitizeBoard(next);
-    controller.setBoard(board);
-    render();
-    baseCtx.paintState();
-    netSendState();
-    syncMon.onLocalChange?.();
-    return true;
-  }
+      onCellClick: (r, c) => {
+        console.log("[Online] onCellClick", { r, c, placing });
 
-  const pos = [r, c];
+        // Modo "colocar piezas" (editor interno)
+        if (placing) {
+          const next = clone(board);
+          next[r][c] = placing === "x" ? "" : placing;
+          board = sanitizeBoard(next);
+          controller.setBoard(board);
+          render();
+          baseCtx.paintState();
+          netSendState();
+          syncMon.onLocalChange?.();
+          return true;
+        }
 
-  console.log("[Online] select SEND", pos);
+        // Modo juego normal: enviar selección
+        const pos = [r, c];
 
-  netSend({
-    t: "ui",
-    op: "select",
-    pos,
-  });
+        console.log("[Online] select SEND (onCellClick)", pos);
 
-  highlightSelected(pos);
+        netSend({
+          t: "ui",
+          op: "select",
+          pos,
+        });
 
-  return true;
-},
+        // Pintar aro también en el propio dispositivo
+        highlightSelected(pos);
 
-
-  
-
-
+        return true;
+      },
 
       onQuietMove: (from, to) => {
         if (!safeCell(from) || !safeCell(to)) return;
@@ -1758,9 +1711,6 @@ onCellClick: (r, c) => {
   });
 
   // ===== Conexiones manuales
-  const $dbgApplyLocal = $dbgApply;
-  const $dbgApplySend = $dbgSend;
-
   $btnConnect?.addEventListener("click", () => {
     const name = sanitizeRoom($roomInput?.value || urlRoom);
     connectBC(name);
@@ -1788,87 +1738,40 @@ onCellClick: (r, c) => {
   // ==========================
   // 🔘 Botones: Empate / Rendirse
   // ==========================
-  const $btnOfferDraw = container.querySelector("#btn-offer-draw");
-  const $btnResign = container.querySelector("#btn-resign");
-
-  // Ocultar si es espectador
-  if (isSpectator) {
-    if ($btnOfferDraw) $btnOfferDraw.style.display = "none";
-    if ($btnResign) $btnResign.style.display = "none";
-  } else {
-    // 🤝 Proponer EMPATE
-    if ($btnOfferDraw) {
-      $btnOfferDraw.addEventListener("click", () => {
-        const ok = confirm("¿Quieres proponer EMPATE a tu rival?");
-        if (!ok) return;
-        netSend({ t: "ui", op: "offer_draw" });
-      });
-    }
-
-    // 🏳️ RENDIRSE / CEDER PARTIDA
-    if ($btnResign) {
-      $btnResign.addEventListener("click", () => {
-        const ok = confirm(
-          "¿Seguro que quieres rendirte y dar la partida por perdida?"
-        );
-        if (!ok) return;
-        netSend({ t: "ui", op: "resign" });
-        alert("Has cedido la partida. Comienza una nueva partida.");
-        hardRestart();
-      });
-    }
-  }
-
-  // DEBUG: aplicar tablero desde panel (con opción forzar casillas válidas)
-  $dbgApplyLocal?.addEventListener("click", () => {
-    try {
-      const newBoard = parseTextBoard($dbgText?.value || "");
-      const newTurn =
-        $dbgTurn?.value === "N" ? COLOR.NEGRO : COLOR.ROJO;
-      if ($dbgForce?.checked) {
-        const isPlayable = (r, c) => ((r + c) % 2) === 1;
-        board = sanitizeBoard(
-          scrubNonPlayableSquares(newBoard, isPlayable)
-        );
-      } else {
-        board = sanitizeBoard(newBoard);
-      }
-      turn = newTurn;
-      stepState = null;
-      render();
-      baseCtx.paintState();
-      setTurnText();
-      updateLock();
-      syncMon.onLocalChange?.();
-      updateMetricsUI();
-    } catch (e) {
-      alert("Error: " + e.message);
-    }
+  setupDrawAndResignButtons({
+    container,
+    isSpectator,
+    netSend,
+    hardRestart,
   });
-  $dbgApplySend?.addEventListener("click", () => {
-    try {
-      const newBoard = parseTextBoard($dbgText?.value || "");
-      const newTurn =
-        $dbgTurn?.value === "N" ? COLOR.NEGRO : COLOR.ROJO;
-      if ($dbgForce?.checked) {
-        const isPlayable = (r, c) => ((r + c) % 2) === 1;
-        board = sanitizeBoard(
-          scrubNonPlayableSquares(newBoard, isPlayable)
-        );
-      } else {
-        board = sanitizeBoard(newBoard);
-      }
-      turn = newTurn;
-      stepState = null;
-      render();
-      baseCtx.paintState();
-      setTurnText();
-      updateLock();
-      netSendState();
-      syncMon.onLocalChange?.();
-      updateMetricsUI();
-    } catch (e) {
-      alert("Error: " + e.message);
-    }
+
+  // ==========================
+  // 🔧 DEBUG: aplicar tablero (panel externo)
+  // ==========================
+  setupDebugPanel({
+    container,
+    SIZE,
+    COLOR,
+    sanitizeBoard,
+    scrubNonPlayableSquares,
+    getBoard: () => board,
+    setBoard: (b) => {
+      board = b;
+    },
+    getTurn: () => turn,
+    setTurn: (t) => {
+      turn = t;
+    },
+    setStepState: (s) => {
+      stepState = s;
+    },
+    render,
+    paintState: () => baseCtx.paintState(),
+    setTurnText,
+    updateLock,
+    netSendState,
+    syncMon,
+    updateMetricsUI,
+    boardToAscii,
   });
 }
