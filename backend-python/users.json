@@ -1,0 +1,12 @@
+[
+  {
+    "name": "WIlmer",
+    "city": "Valencia",
+    "province": "Los Rios",
+    "email": "wilmerepara7@hotmail.com",
+    "phone": "0990473553",
+    "profile_photo_url": null,
+    "id": "7f7ddcb2-5612-4f58-b6aa-5dbdb676cc95",
+    "password_hash": "fakehashed_12345"
+  }
+]

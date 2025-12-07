@@ -83,6 +83,9 @@ import { boardToAscii as boardToAsciiDebug } from "./debug.js";
 import { createChatController } from "./chat.controller.js";
 import { mountOnlineChatPanel } from "../ui/chat.panel.js";
 
+// 🆕 Halo remoto/local modularizado
+import { createRemoteSelectionHighlighter } from "../ui.selection.js";
+
 // --- Utils locales ---
 const sanitizeRoom = (s) =>
   String(s || "sala1").trim().toLowerCase().replace(/\s+/g, "").slice(0, 48);
@@ -369,12 +372,11 @@ export default function mountOnline(container) {
   const $wsStatus = container.querySelector("#ws-status");
 
   // ================================
-  // 🟢 Enviar selección al otro lado
+  // 🟢 Enviar selección al otro lado (solo envío)
   // ================================
   if ($board) {
     $board.addEventListener("pointerdown", (ev) => {
       try {
-        // Buscar la casilla [data-r][data-c] donde se hizo clic
         const cell = ev.target.closest("[data-r][data-c]");
         if (!cell || !$board.contains(cell)) return;
 
@@ -386,18 +388,17 @@ export default function mountOnline(container) {
         const c = Number(cAttr);
         if (!Number.isInteger(r) || !Number.isInteger(c)) return;
 
-        // Solo si hay una pieza en esa casilla
         const piece = cell.querySelector(".piece");
         if (!piece) return;
 
-        // Enviamos posición lógica (r,c) al resto de la sala
+        const pos = [r, c];
         netSend({
           t: "ui",
           op: "select",
-          pos: [r, c],
+          pos,
         });
 
-        console.log("[Online] select SEND (pointerdown)", [r, c]);
+        console.log("[Online] select SEND (pointerdown)", pos);
       } catch (e) {
         console.warn("[Online] Error enviando select remoto:", e);
       }
@@ -981,89 +982,246 @@ export default function mountOnline(container) {
     return out;
   }
 
-  // Halo de selección REMOTO/LOCAL independiente del motor
-  let __remoteHalo = null;
+  // 🆕 Highlighter remoto/local reutilizable
+  const highlightSelected = createRemoteSelectionHighlighter({
+    boardEl: $board,
+    getBoard: () => board,
+    colorOf,
+    COLOR,
+  });
 
-  /**
-   * Dibuja un aro alrededor de la casilla (r,c) seleccionada.
-   * Usa la celda real [data-r][data-c] para que coincida EXACTO
-   * con la pieza, respetando cualquier orientación/transform.
-   *
-   * @param {[number, number]} pos Coordenadas lógicas [r,c] 0..9
-   */
-  function highlightSelected(pos) {
-    if (!$board) return;
-    if (!pos || !Array.isArray(pos) || pos.length !== 2) return;
+  // ====== NUEVAS FUNCIONES AUXILIARES PARA MENSAJES REMOTOS ======
 
-    const [r, c] = pos;
-    if (!safeCell([r, c])) return;
-
-    // Buscar la celda DOM exacta
-    const cell = $board.querySelector(
-      `[data-r="${r}"][data-c="${c}"]`
-    );
-    if (!cell) {
-      console.warn("[Online] highlightSelected: no se encontró celda para", {
-        r,
-        c,
-      });
+  function handleUIMessageFromNetwork(msg) {
+    // Handshake de reinicio bilateral
+    if (msg.op === "restart_req") {
+      if (isSpectator) return;
+      const accept = confirm(
+        "El otro jugador quiere reiniciar la partida. ¿Aceptar?"
+      );
+      netSend({ t: "ui", op: "restart_ack", accepted: !!accept });
+      if (accept) {
+        hardRestart();
+      }
       return;
     }
 
-    // Crear el halo una sola vez
-    if (!__remoteHalo) {
-      __remoteHalo = document.createElement("div");
-      const s = __remoteHalo.style;
-
-      s.position = "absolute";
-      s.inset = "0"; // ocupa toda la celda
-      s.pointerEvents = "none";
-      s.boxSizing = "border-box";
-      s.borderRadius = "50%";
-      s.zIndex = "5";
-      s.transition = "all 80ms ease-out";
-
-      // Fonde suave verde translúcido
-      s.backgroundColor = "rgba(0, 255, 0, 0.14)";
+    if (msg.op === "restart_ack") {
+      if (msg.accepted) {
+        alert("El otro jugador aceptó. La partida se ha reiniciado.");
+        hardRestart();
+      } else {
+        alert("El otro jugador rechazó el reinicio.");
+      }
+      return;
     }
 
-    // Asegurar que la celda pueda alojar hijos posicionados
-    const cs = window.getComputedStyle(cell);
-    if (cs.position === "static") {
-      cell.style.position = "relative";
+    // 🔹 El rival propone EMPATE
+    if (msg.op === "offer_draw") {
+      if (isSpectator) return;
+
+      const accept = confirm(
+        "Tu rival propone EMPATE. ¿Aceptar tablas?"
+      );
+      netSend({
+        t: "ui",
+        op: "draw_response",
+        accepted: !!accept,
+      });
+
+      if (accept) {
+        // Sin alert extra: solo reinicio silencioso
+        hardRestart();
+      }
+      return;
     }
 
-    // Calcular grosor del borde en función del ancho de la celda
-    const rect = cell.getBoundingClientRect();
-    const cellW = rect.width || (cell.offsetWidth || 40);
-    const thickness = Math.max(3, Math.round(cellW * 0.09));
-
-    // Elegir color del borde según la pieza (negro/blanco)
-    let ch = "";
-    try {
-      ch = board?.[r]?.[c] ?? "";
-    } catch {}
-
-    let borderColor = "#00ff00"; // fallback verde
-    if (ch) {
-      const col = colorOf(ch);
-      borderColor = col === COLOR.NEGRO ? "#ffffff" : "#000000";
+    // 🔹 Respuesta a nuestra propuesta de EMPATE
+    if (msg.op === "draw_response") {
+      if (msg.accepted) {
+        alert("El rival aceptó el empate. Comienza una nueva partida.");
+        hardRestart();
+      } else {
+        alert("El rival rechazó el empate.");
+      }
+      return;
     }
 
-    __remoteHalo.style.border = `${thickness}px solid ${borderColor}`;
-   __remoteHalo.style.boxShadow =
-      "0 0 8px 3px rgba(0, 255, 0, 0.5)";
+    // 🔹 El rival se RINDE
+    if (msg.op === "resign") {
+      alert(
+        "Tu rival se ha rendido. Has ganado la partida. Comienza una nueva partida."
+      );
+      hardRestart();
+      return;
+    }
 
-    
-    // Mover el halo a la nueva celda
-    if (__remoteHalo.parentElement !== cell) {
+    // 🟢 Aro de selección remoto
+    if (msg.op === "select" && msg.pos) {
+      console.log("[Online] select RECV", msg.pos);
+      highlightSelected(msg.pos);
+      return;
+    }
+
+    // 🆕 CHAT DE TEXTO
+    if (msg.op === "chat" && msg.payload) {
       try {
-        __remoteHalo.parentElement?.removeChild(__remoteHalo);
-      } catch {}
-      cell.appendChild(__remoteHalo);
+        chatController.handleSignalMessage(msg.payload);
+      } catch (e) {
+        console.warn("[Online][CHAT] Error manejando mensaje:", e);
+      }
+      return;
     }
 
-    console.log("[Online] highlightSelected()", { r, c });
+    // 🎥 Señalización WebRTC
+    if (msg.op === "rtc" && msg.payload && rtc) {
+      const payload = msg.payload;
+      const kind = payload.kind;
+
+      // Si llega una offer y ESTE lado NO es el iniciador, pedir confirmación
+      if (kind === "offer" && !isCallInitiator) {
+        const ok = confirm(
+          "Tu rival quiere iniciar una videollamada. ¿Aceptar?"
+        );
+        if (!ok) {
+          return;
+        }
+      }
+
+      try {
+        rtc.handleSignalMessage(payload);
+      } catch (e) {
+        console.warn("[Online][RTC] Error al manejar señal RTC:", e);
+      }
+    }
+  }
+
+  function applyRemoteStateFromNetwork(msg) {
+    try {
+      // ---- Diff SFX: comparamos el estado anterior vs el nuevo snapshot ----
+      const prevBoard = board;
+      const prevCounts = countPieces(prevBoard);
+      const prevText = boardToAscii(prevBoard);
+
+      const nextBoard = sanitizeBoard(msg.board);
+      const nextCounts = countPieces(nextBoard);
+      const nextText = boardToAscii(nextBoard);
+
+      const moved = prevText !== nextText;
+      const captured = prevCounts.total > nextCounts.total;
+      const crownedR = nextCounts.R > prevCounts.R;
+      const crownedN = nextCounts.N > prevCounts.N;
+      const crowned = crownedR || crownedN;
+
+      applyingRemote = true;
+      try {
+        board = nextBoard;
+        turn = msg.turn;
+        render();
+        baseCtx.paintState();
+        setTurnText();
+        updateLock();
+      } finally {
+        applyingRemote = false;
+        updateLock();
+      }
+
+      // Dispara SFX después de pintar (best-effort)
+      if (moved) {
+        try {
+          if (captured) onCaptureHop();
+          else onMove();
+          if (crowned) onCrown();
+        } catch {}
+      }
+    } catch (e) {
+      console.warn("[Online] state apply error:", e);
+    }
+  }
+
+  function applyRemoteMoveFromNetwork(msg) {
+    if (!isValidMovePayload(msg.payload)) {
+      syncMon.onInvalid?.(1);
+      return;
+    }
+
+    const check = syncMon.verifyMoveHashes(msg);
+    if (!check.ok) {
+      netSend({ t: "state_req" });
+      return;
+    }
+
+    const hasMandatoryCapture = anyCaptureAvailableFor(turn);
+    const isQuiet = msg.payload?.type === "move";
+    if (hasMandatoryCapture && isQuiet) {
+      // Hay captura obligatoria pero el rival envía una jugada "quieta"
+      syncMon.onInvalid?.(1);
+      netSend({ t: "state_req" });
+      return;
+    }
+
+    try {
+      applyingRemote = true;
+      const payload = msg.payload;
+
+      if (payload.type === "move") {
+        if (!safeCell(payload.from) || !safeCell(payload.to)) {
+          syncMon.onInvalid?.(1);
+          return;
+        }
+        const nb = aplicarMovimiento(board, {
+          from: payload.from,
+          to: payload.to,
+        });
+        if (nb !== board) {
+          board = sanitizeBoard(nb);
+          crownIfNeeded(board, payload.to);
+          try {
+            onMove();
+          } catch {}
+        } else {
+          netSend({ t: "state_req" });
+        }
+      } else if (payload.type === "capture") {
+        const sPath = safePath(payload.path);
+        if (!sPath) {
+          syncMon.onInvalid?.(1);
+          return;
+        }
+        const nb = aplicarMovimiento(board, { path: sPath });
+        if (nb !== board) {
+          board = sanitizeBoard(nb);
+          crownIfNeeded(board, last(sPath));
+          try {
+            onCaptureHop();
+          } catch {}
+        } else {
+          netSend({ t: "state_req" });
+        }
+      }
+
+      if (msg.endTurn === true) {
+        turn = turn === COLOR.ROJO ? COLOR.NEGRO : COLOR.ROJO;
+      }
+
+      render();
+      baseCtx.paintState();
+      setTurnText();
+      updateLock();
+
+      // ▼▼▼ Registrar jugada REMOTA para el buffer de replay
+      try {
+        seqCtl?.recordLocalMove?.(msg);
+      } catch {}
+
+      const aft = syncMon.afterApplyMoveCheck(msg.nextH);
+      if (aft.requestState) netSend({ t: "state_req" });
+    } catch (e) {
+      console.warn("[Online] Fallo aplicando jugada remota:", e);
+    } finally {
+      applyingRemote = false;
+      updateLock();
+    }
   }
 
   // ===== Recepción y aplicación de mensajes remotos
@@ -1079,10 +1237,12 @@ export default function mountOnline(container) {
 
     const msgV = msg.v == null ? 1 : msg.v;
     if (msgV !== PROTO_V) {
+      // Versión de protocolo distinta: ignorar silenciosamente
       return;
     }
 
     if (msg.room && currentRoom && msg.room !== currentRoom) {
+      // Mensaje de otra sala: ignorar
       return;
     }
 
@@ -1097,7 +1257,11 @@ export default function mountOnline(container) {
         peerIds.add(msg.clientId);
         // Responder para que el otro también me agregue (anti-carrera)
         if (msg.clientId !== CLIENT_ID) {
-          netSend({ t: "presence_ack", clientId: CLIENT_ID, ts: Date.now() });
+          netSend({
+            t: "presence_ack",
+            clientId: CLIENT_ID,
+            ts: Date.now(),
+          });
         }
         // Recalcular seating al ver un nuevo par
         recomputeSideFromPeers();
@@ -1129,251 +1293,28 @@ export default function mountOnline(container) {
       return;
     }
 
-    if (msg.t === "hello" || msg.t === "join_ok" || msg.t === "join_ack")
+    if (msg.t === "hello" || msg.t === "join_ok" || msg.t === "join_ack") {
       return;
+    }
 
     if (msg.t === "state_req") {
       netSendState();
       return;
     }
 
-    // Handshake de reinicio bilateral (señalizado como t:"ui" para pasar por el servidor)
-    if (msg.t === "ui" && msg.op === "restart_req") {
-      if (isSpectator) return;
-      const accept = confirm(
-        "El otro jugador quiere reiniciar la partida. ¿Aceptar?"
-      );
-      netSend({ t: "ui", op: "restart_ack", accepted: !!accept });
-      if (accept) {
-        hardRestart();
-      }
-      return;
-    }
-
-    if (msg.t === "ui" && msg.op === "restart_ack") {
-      if (msg.accepted) {
-        alert("El otro jugador aceptó. La partida se ha reiniciado.");
-        hardRestart();
-      } else {
-        alert("El otro jugador rechazó el reinicio.");
-      }
-      return;
-    }
-
-    // 🔹 El rival propone EMPATE
-    if (msg.t === "ui" && msg.op === "offer_draw") {
-      if (isSpectator) return;
-
-      const accept = confirm(
-        "Tu rival propone EMPATE. ¿Aceptar tablas?"
-      );
-      netSend({
-        t: "ui",
-        op: "draw_response",
-        accepted: !!accept,
-      });
-
-      if (accept) {
-        // Sin alert extra: solo reinicio silencioso
-        hardRestart();
-      }
-      return;
-    }
-
-    // 🔹 Respuesta a nuestra propuesta de EMPATE
-    if (msg.t === "ui" && msg.op === "draw_response") {
-      if (msg.accepted) {
-        alert("El rival aceptó el empate. Comienza una nueva partida.");
-        hardRestart();
-      } else {
-        alert("El rival rechazó el empate.");
-      }
-      return;
-    }
-
-    // 🔹 El rival se RINDE
-    if (msg.t === "ui" && msg.op === "resign") {
-      alert(
-        "Tu rival se ha rendido. Has ganado la partida. Comienza una nueva partida."
-      );
-      hardRestart();
-      return;
-    }
-
-    // 🟢 Aro de selección remoto
-    if (msg.t === "ui" && msg.op === "select" && msg.pos) {
-      console.log("[Online] select RECV", msg.pos);
-      highlightSelected(msg.pos);
-      return;
-    }
-
-    // 🆕 CHAT DE TEXTO (t:"ui", op:"chat")
-    if (msg.t === "ui" && msg.op === "chat" && msg.payload) {
-      try {
-        chatController.handleSignalMessage(msg.payload);
-      } catch (e) {
-        console.warn("[Online][CHAT] Error manejando mensaje:", e);
-      }
-      return;
-    }
-
-    // 🎥 Señalización WebRTC (video/audio)
-    if (msg.t === "ui" && msg.op === "rtc" && msg.payload && rtc) {
-      const payload = msg.payload;
-      const kind = payload.kind;
-
-      // Si llega una offer y ESTE lado NO es el iniciador, pedir confirmación
-      if (kind === "offer" && !isCallInitiator) {
-        const ok = confirm(
-          "Tu rival quiere iniciar una videollamada. ¿Aceptar?"
-        );
-        if (!ok) {
-          // Si no acepta, no procesamos esta oferta
-          return;
-        }
-      }
-
-      try {
-        rtc.handleSignalMessage(payload);
-      } catch (e) {
-        console.warn(
-          "[Online][RTC] Error al manejar señal RTC:",
-          e
-        );
-      }
+    // Mensajes de UI (restart, empate, resign, select, chat, rtc...)
+    if (msg.t === "ui") {
+      handleUIMessageFromNetwork(msg);
       return;
     }
 
     if (msg.t === "state") {
-      try {
-        // ---- Diff SFX: comparamos el estado anterior vs el nuevo snapshot ----
-        const prevBoard = board;
-        const prevCounts = countPieces(prevBoard);
-        const prevText = boardToAscii(prevBoard);
-
-        const nextBoard = sanitizeBoard(msg.board);
-        const nextCounts = countPieces(nextBoard);
-        const nextText = boardToAscii(nextBoard);
-
-        const moved = prevText !== nextText;
-        const captured = prevCounts.total > nextCounts.total;
-        const crownedR = nextCounts.R > prevCounts.R;
-        const crownedN = nextCounts.N > prevCounts.N;
-        const crowned = crownedR || crownedN;
-
-        applyingRemote = true;
-        try {
-          board = nextBoard;
-          turn = msg.turn;
-          render();
-          baseCtx.paintState();
-          setTurnText();
-          updateLock();
-        } finally {
-          applyingRemote = false;
-          updateLock();
-        }
-
-        // Dispara SFX después de pintar (best-effort)
-        if (moved) {
-          try {
-            if (captured) onCaptureHop();
-            else onMove();
-            if (crowned) onCrown();
-          } catch {}
-        }
-      } catch (e) {
-        console.warn("[Online] state apply error:", e);
-      }
+      applyRemoteStateFromNetwork(msg);
       return;
     }
 
     if (msg.t === "move" && msg.payload) {
-      if (!isValidMovePayload(msg.payload)) {
-        syncMon.onInvalid?.(1);
-        return;
-      }
-
-      const check = syncMon.verifyMoveHashes(msg);
-      if (!check.ok) {
-        netSend({ t: "state_req" });
-        return;
-      }
-
-      const hasMandatoryCapture = anyCaptureAvailableFor(turn);
-      const isQuiet = msg.payload?.type === "move";
-      if (hasMandatoryCapture && isQuiet) {
-        syncMon.onInvalid?.(1);
-        netSend({ t: "state_req" });
-        return;
-      }
-
-      try {
-        applyingRemote = true;
-        const payload = msg.payload;
-
-        if (payload.type === "move") {
-          if (!safeCell(payload.from) || !safeCell(payload.to)) {
-            syncMon.onInvalid?.(1);
-            return;
-          }
-          const nb = aplicarMovimiento(board, {
-            from: payload.from,
-            to: payload.to,
-          });
-          if (nb !== board) {
-            board = sanitizeBoard(nb);
-            crownIfNeeded(board, payload.to);
-            try {
-              onMove();
-            } catch {}
-          } else {
-            netSend({ t: "state_req" });
-          }
-        } else if (payload.type === "capture") {
-          const sPath = safePath(payload.path);
-          if (!sPath) {
-            syncMon.onInvalid?.(1);
-            return;
-          }
-          const nb = aplicarMovimiento(board, { path: sPath });
-          if (nb !== board) {
-            board = sanitizeBoard(nb);
-            crownIfNeeded(board, last(sPath));
-            try {
-              onCaptureHop();
-            } catch {}
-          } else {
-            netSend({ t: "state_req" });
-          }
-        }
-
-        if (msg.endTurn === true) {
-          turn =
-            turn === COLOR.ROJO ? COLOR.NEGRO : COLOR.ROJO;
-        }
-
-        render();
-        baseCtx.paintState();
-        setTurnText();
-        updateLock();
-
-        // ▼▼▼ Registrar jugada REMOTA para el buffer de replay
-        try {
-          seqCtl?.recordLocalMove?.(msg);
-        } catch {}
-
-        const aft = syncMon.afterApplyMoveCheck(msg.nextH);
-        if (aft.requestState) netSend({ t: "state_req" });
-      } catch (e) {
-        console.warn(
-          "[Online] Fallo aplicando jugada remota:",
-          e
-        );
-      } finally {
-        applyingRemote = false;
-        updateLock();
-      }
+      applyRemoteMoveFromNetwork(msg);
       return;
     }
   }
@@ -1509,20 +1450,10 @@ export default function mountOnline(container) {
           return true;
         }
 
-        // Modo juego normal: enviar selección
+        // Modo juego normal: solo pintamos aro local,
+        // el envío remoto lo hace el listener de pointerdown
         const pos = [r, c];
-
-        console.log("[Online] select SEND (onCellClick)", pos);
-
-        netSend({
-          t: "ui",
-          op: "select",
-          pos,
-        });
-
-        // Pintar aro también en el propio dispositivo
         highlightSelected(pos);
-
         return true;
       },
 
@@ -1572,10 +1503,7 @@ export default function mountOnline(container) {
             syncMon.onLocalChange?.();
           }
         } catch (e) {
-          console.warn(
-            "[Online] onQuietMove emit failed:",
-            e
-          );
+          console.warn("[Online] onQuietMove emit failed:", e);
         }
       },
 
@@ -1619,7 +1547,7 @@ export default function mountOnline(container) {
                 nextH,
               });
 
-              // ▼▼▼ Registrar jugada local (captura, continúa cadena) en el buffer
+              // ▼▼▼ Registrar jugada local (captura, continúa cadena)
               try {
                 seqCtl?.recordLocalMove?.({
                   t: "move",
@@ -1646,7 +1574,7 @@ export default function mountOnline(container) {
                 nextH,
               });
 
-              // ▼▼▼ Registrar jugada local (captura, fin de cadena) en el buffer
+              // ▼▼▼ Registrar jugada local (captura, fin de cadena)
               try {
                 seqCtl?.recordLocalMove?.({
                   t: "move",
@@ -1669,10 +1597,7 @@ export default function mountOnline(container) {
             syncMon.onLocalChange?.();
           }
         } catch (e) {
-          console.warn(
-            "[Online] onCaptureHop emit failed:",
-            e
-          );
+          console.warn("[Online] onCaptureHop emit failed:", e);
         }
       },
     });
@@ -1680,7 +1605,8 @@ export default function mountOnline(container) {
     // Espectador: solo banner
     const el = document.createElement("div");
     el.className = "spectator-banner";
-    el.innerHTML = `<span class="dot"></span> Modo espectador — solo visualización`;
+    el.innerHTML =
+      `<span class="dot"></span> Modo espectador — solo visualización`;
     document.body.appendChild(el);
   }
 

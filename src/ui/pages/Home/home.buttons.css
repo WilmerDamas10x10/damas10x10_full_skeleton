@@ -1,0 +1,212 @@
+/* ================================
+   Botones menú principal – Glow en el botón, texto negro suave
+   ================================ */
+
+.btn.btn-menu-principal {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  padding: 0.9rem 1.9rem;
+  border-radius: 999px;
+
+  /* Fondo azul suave */
+  background: linear-gradient(180deg, #d3e5f7, #b9d3eb);
+
+  /* Borde grueso */
+  border: 2.5px solid rgba(60, 110, 150, 0.55);
+
+  /* Sombras suaves */
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.08),
+    inset 0 1px 2px rgba(255, 255, 255, 0.9);
+
+  /* TEXTO NEGRO SUAVE (NO CAMBIA) */
+  color: #222;
+  font-weight: 700;
+  font-size: 0.95rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+
+  transition:
+    background 180ms ease,
+    box-shadow 180ms ease,
+    transform 150ms ease,
+    border-color 150ms ease;
+  cursor: pointer;
+}
+
+/* Efecto de brillo superior */
+.btn.btn-menu-principal::before {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: inherit;
+  background: radial-gradient(
+    circle at 50% 0%,
+    rgba(255, 255, 255, 0.30),
+    transparent 75%
+  );
+  pointer-events: none;
+}
+
+/* 🔵 HOVER — el BOTÓN brilla, el texto NO cambia */
+.btn.btn-menu-principal:hover,
+.btn.btn-menu-principal:focus-visible {
+  background: linear-gradient(180deg, #c7def4, #aac7e3);
+
+  /* borde más claro al iluminar */
+  border-color: rgba(60, 140, 180, 0.75);
+
+  /* glow azul alrededor del botón */
+  box-shadow:
+    0 0 10px rgba(0, 200, 255, 0.45),
+    0 0 20px rgba(0, 170, 230, 0.35),
+    inset 0 1px 2px rgba(255, 255, 255, 1);
+
+  transform: translateY(-1px) scale(1.015);
+
+  /* texto NO se ilumina, NO cambia */
+  color: #222;
+}
+
+/* 🟢 CLICK — flash suave, botón iluminado momentáneamente */
+.btn.btn-menu-principal:active {
+  transform: translateY(1px) scale(0.98);
+  
+  background: linear-gradient(180deg, #bcd4e8, #9fbfd7);
+
+  box-shadow:
+    0 0 14px rgba(0, 255, 240, 0.55),
+    0 0 28px rgba(0, 200, 255, 0.45),
+    inset 0 1px 2px rgba(255, 255, 255, 1);
+
+  border-color: rgba(70, 160, 200, 0.85);
+
+  /* texto sigue intacto */
+  color: #222;
+}
+
+
+/* Mejora accesibilidad al enfocarse con teclado */
+.btn.btn-menu-principal:focus-visible {
+  outline: 2px solid rgba(94, 234, 212, 0.9);
+  outline-offset: 3px;
+}
+
+/* ================================
+   BOTONES PRINCIPALES DEL MENÚ
+================================ */
+
+/* Contenedor tipo tarjeta */
+.acc.card {
+  border: 3px solid rgba(0, 90, 150, 0.30);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(3px);
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.acc.card:hover {
+  border-color: rgba(0, 140, 210, 0.55);
+  box-shadow: 0 4px 18px rgba(0, 120, 200, 0.18);
+}
+
+/* Encabezado del botón */
+.acc__hdr {
+  border: 2px solid rgba(0, 125, 190, 0.40);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(2px);
+  cursor: pointer;
+  transition: background 0.25s ease, border-color 0.25s ease;
+}
+
+.acc__hdr:hover {
+  background: rgba(255, 255, 255, 0.65);
+  border-color: rgba(0, 155, 220, 0.70);
+}
+
+/* Icono de la flechita */
+.acc__hdr .chev {
+  opacity: 0.7;
+  transition: transform 0.25s ease;
+}
+
+.acc__hdr:hover .chev {
+  transform: translateX(4px);
+  opacity: 1;
+}
+/* ============================
+/* ============================
+   SALUDO DEL USUARIO (LOGIN)
+   ============================ */
+
+/* ================================
+   Saludo usuario ("Hola, Wilmer")
+   ================================ */
+
+#saludo-usuario {
+  position: absolute;
+  top: 58px;          /* ajusta si quieres un poco más arriba/abajo */
+  right: 24px;
+  margin: 0;
+
+  padding: 10px 18px;
+  border-radius: 999px;
+
+  background: linear-gradient(135deg, #008bdb, #00b7ff);
+  color: #ffffff;
+
+  font-size: 1.05rem;
+  font-weight: 600;
+
+  box-shadow: 0 4px 14px rgba(0, 150, 255, 0.35);
+  backdrop-filter: blur(4px);
+
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  /* IMPORTANTE: siempre visible */
+  opacity: 1;
+  transform: none;
+}
+
+/* 📱 Ajuste en pantallas pequeñas */
+@media (max-width: 600px) {
+  #saludo-usuario {
+    top: 78px;       /* súbelo/bájalo si todavía pisa algo en móvil */
+    right: 12px;
+    font-size: 0.95rem;
+    padding: 8px 14px;
+  }
+}
+/* Botón / aviso debajo del título */
+#saludo-usuario {
+  position: relative !important;
+  margin-top: -4px !important; /* pegado al título */
+  display: inline-block;
+  padding: 10px 24px !important;
+  background: linear-gradient(135deg, #ff0022, #00b7ff);
+  color: rgb(22, 2, 2) !important;
+  font-size: 1rem;
+  font-weight: 600;
+  border-radius: 18px;
+
+  /* ⭐ MÁS GRUESO TODAVÍA */
+  border: 1
+  2px solid rgba(187, 24, 24, 0.85);
+
+  box-shadow: 0 4px 14px rgba(0, 140, 255, 0.35);
+  text-align: center;
+}
+
+/* SIN movimiento en hover */
+#saludo-usuario:hover,
+#saludo-usuario:active {
+  transform: none !important;
+  box-shadow: 0 4px 14px rgba(0, 140, 255, 0.35) !important;
+}

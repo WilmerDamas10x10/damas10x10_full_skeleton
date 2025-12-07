@@ -271,3 +271,41 @@ label.online-btn:hover {
     margin: 10px 0 20px 0;
   }
 }
+
+/* ===========================================
+   Halo de selección LOCAL / REMOTO (Online)
+   — Ajusta aquí la intensidad del efecto —
+   =========================================== */
+
+.d10-selection-halo {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-sizing: border-box;
+  border-style: solid;
+  border-color: transparent;
+  border-radius: 50%;
+  z-index: 5;
+
+  /* Animación suave */
+  transition:
+    box-shadow 80ms ease-out,
+    background-color 80ms ease-out,
+    border-color 80ms ease-out;
+
+  /* Velo verde MUY suave (puedes subir/bajar el alfa) */
+  background-color: rgba(0, 255, 0, 0.16);
+
+  /* 💡 Aquí subimos "una pizquita" la intensidad */
+  box-shadow: 0 0 10px 4px rgba(0, 255, 0, 0.55);
+}
+
+/* Aro cuando la pieza es del lado ROJO (blanca en algunas skins) */
+.d10-selection-halo--rojo {
+  border-color: rgba(0, 0, 0, 0.95);
+}
+
+/* Aro cuando la pieza es del lado NEGRO */
+.d10-selection-halo--negro {
+  border-color: rgba(255, 255, 255, 0.98);
+}

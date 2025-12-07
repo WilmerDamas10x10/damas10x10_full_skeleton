@@ -20,6 +20,7 @@ import { isGhost } from "@rules";
 
 import { minimaxChooseBestMove } from "../../../ai/minimax.js";
 import { evaluate } from "../../../ai/eval.js";
+import { pedirJugadaIA } from "../../api/ia.api.js";
 
 const FX_CAPTURE_MS = 2000;
 const FX_MOVE_MS    = 220;
@@ -94,6 +95,58 @@ function fallbackSingleCapture(board, from, to){
 }
 function doHop(board, from, to){ try { onCaptureHop(); } catch {} return fallbackSingleCapture(board, from, to); }
 
+/**
+ * Convierte un string tipo "e3" a coordenadas [row,col] 0..9
+ */
+function parseAlgebraicCoord(token){
+  if (!token || typeof token !== "string") return null;
+  const s = token.trim();
+  const m = /^([a-j])(10|[1-9])$/i.exec(s);
+  if (!m) return null;
+
+  const colMap = { a:0, b:1, c:2, d:3, e:4, f:5, g:6, h:7, i:8, j:9 };
+  const col = colMap[m[1].toLowerCase()];
+  const rowNum = parseInt(m[2], 10);
+  if (col == null || isNaN(rowNum)) return null;
+
+  const row = SIZE - rowNum;
+  if (row < 0 || row >= SIZE) return null;
+
+  return [row, col];
+}
+
+/**
+ * Convierte un string tipo "e3-f4" a coordenadas {from,to}
+ * (mantengo esta función para compatibilidad con jugadas simples)
+ */
+function parseAlgebraicMove(str){
+  if (!str || typeof str !== "string") return null;
+  const s = str.trim();
+  const m = /^([a-j])(10|[1-9])-([a-j])(10|[1-9])$/i.exec(s);
+  if (!m) return null;
+
+  const from = parseAlgebraicCoord(m[1] + m[2]);
+  const to   = parseAlgebraicCoord(m[3] + m[4]);
+  if (!from || !to) return null;
+  return { from, to };
+}
+
+/**
+ * NUEVO: convierte "c3-e5-g7" en una ruta [[r0,c0],[r1,c1],[r2,c2]]
+ */
+function parseAlgebraicRoute(str){
+  if (!str || typeof str !== "string") return null;
+  const parts = str.split("-").map(s => s.trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+  const route = [];
+  for (const p of parts){
+    const coord = parseAlgebraicCoord(p);
+    if (!coord) return null;
+    route.push(coord);
+  }
+  return route;
+}
+
 export default function mountAI(container){
   if (!container) return;
 
@@ -102,8 +155,7 @@ export default function mountAI(container){
   initEditorSFX();
   ensureGlobalFX();
 
-  // ✅ Imports dinámicos (opcionales) de los dos archivos nuevos
-  //    - No rompen el build si aún no existen.
+  // Imports dinámicos opcionales de logMoves / trainer
   let recordMove = null;
   let trainModel = null;
   import("../../../ai/learning/logMoves.js").then(m => { recordMove = m.recordMove; }).catch(()=>{});
@@ -265,27 +317,164 @@ export default function mountAI(container){
     thinking = true; setAiText();
     await new Promise(res => setTimeout(res, FX_MOVE_MS));
     try {
-      // ... (resto del archivo igual al que ya tienes con la toolbar fija)
+      let best = null;
 
-      const best = minimaxChooseBestMove(
-        board,
-        aiSide,
-        6, // profundidad estable
-        {
-          COLOR, SIZE, colorOf,
-          movimientos: baseMovimientos,
-          aplicarMovimiento: baseAplicarMovimiento,
-          crownIfNeeded,
-          evaluate
-        },
-        {
-          rootCaptureOnly: false, // permitir quiet en raíz (anzuelos)
-          quiescence: true,
-          useSEE: true,
-          seePenaltyMargin: -0.08,
-          timeMs: 900        // consistente con minimax.js
+      // 1) Intentar jugada desde Python
+      try {
+        const fen =
+          typeof __D10 !== "undefined" && __D10?.fen
+            ? __D10.fen()
+            : JSON.stringify(board);
+
+        const sideCode = aiSide === COLOR.ROJO ? "R" : "N";
+
+        console.log("[IA] (Python) Enviando posición al backend:", {
+          sideCode,
+          fenPreview: typeof fen === "string" ? fen.slice(0, 80) : fen,
+        });
+
+        const respuesta = await pedirJugadaIA(
+          fen,
+          sideCode,
+          board   // enviamos el tablero real al backend Python
+        );
+
+        console.log("[IA] (Python) Sugerencia recibida:", respuesta);
+
+        if (respuesta && typeof respuesta.move === "string") {
+          // Primero intentamos interpretar como RUTA completa "c3-e5-g7"
+          const route = parseAlgebraicRoute(respuesta.move);
+          if (route && route.length >= 2) {
+            // Decidimos si es captura: al menos un salto de 2 y pieza en medio
+            let isCapture = false;
+            for (let i = 0; i < route.length - 1; i++) {
+              const from = route[i];
+              const to   = route[i + 1];
+              const dr = to[0] - from[0];
+              const dc = to[1] - from[1];
+              if (Math.abs(dr) === 2 && Math.abs(dc) === 2) {
+                const mid = findMidOnCurrentBoard(board, from, to);
+                if (mid) {
+                  isCapture = true;
+                  break;
+                }
+              }
+            }
+
+            if (isCapture) {
+              best = {
+                type: "capture",
+                path: route, // cadena completa: [c3, e5, g7, ...]
+              };
+            } else {
+              // No es captura (o no pudimos detectarla), lo tratamos como movimiento simple
+              best = {
+                type: "move",
+                from: route[0],
+                to:   route[route.length - 1],
+              };
+            }
+
+            console.log("[IA] Usando jugada de Python (ruta):", respuesta.move, route, best);
+          } else {
+            // Fallback: jugada simple "e3-f4"
+            const parsed = parseAlgebraicMove(respuesta.move);
+            if (parsed) {
+              const [fr, fc] = parsed.from;
+              const [tr, tc] = parsed.to;
+              const dr = tr - fr;
+              const dc = tc - fc;
+
+              let isCapture = false;
+              if (Math.abs(dr) === 2 && Math.abs(dc) === 2) {
+                const mid = findMidOnCurrentBoard(board, parsed.from, parsed.to);
+                if (mid) {
+                  isCapture = true;
+                }
+              }
+
+              if (isCapture) {
+                best = {
+                  type: "capture",
+                  path: [parsed.from, parsed.to],
+                };
+              } else {
+                best = {
+                  type: "move",
+                  from: parsed.from,
+                  to: parsed.to,
+                };
+              }
+
+              console.log("[IA] Usando jugada de Python (simple):", respuesta.move, parsed, best);
+            } else {
+              console.warn("[IA] No se pudo parsear respuesta.move:", respuesta.move);
+            }
+          }
         }
-      );
+
+      } catch (err) {
+        console.warn("[IA] (Python) Error al llamar a pedirJugadaIA:", err);
+      }
+
+      // 2) Si Python no dio una jugada usable → caer al minimax JS
+      if (!best) {
+        best = minimaxChooseBestMove(
+          board,
+          aiSide,
+          6, // profundidad estable
+          {
+            COLOR, SIZE, colorOf,
+            movimientos: baseMovimientos,
+            aplicarMovimiento: baseAplicarMovimiento,
+            crownIfNeeded,
+            evaluate
+          },
+          {
+            rootCaptureOnly: false,
+            quiescence: true,
+            useSEE: true,
+            seePenaltyMargin: -0.08,
+            timeMs: 900
+          }
+        );
+      }
+
+      // 2.5) Si la jugada elegida (Python o minimax) no cuadra con el tablero,
+      //      volvemos a intentar con minimax JS como respaldo.
+      if (
+        best &&
+        best.from && best.to &&
+        (
+          !board[best.from[0]] ||
+          !board[best.from[0]][best.from[1]]
+        )
+      ) {
+        console.log("[IA] Jugada de Python no encaja con tablero actual, usando minimax JS (normal mientras el motor sea de prueba)");
+
+        const fallback = minimaxChooseBestMove(
+          board,
+          aiSide,
+          6,
+          {
+            COLOR, SIZE, colorOf,
+            movimientos: baseMovimientos,
+            aplicarMovimiento: baseAplicarMovimiento,
+            crownIfNeeded,
+            evaluate
+          },
+          {
+            rootCaptureOnly: false,
+            quiescence: true,
+            useSEE: true,
+            seePenaltyMargin: -0.08,
+            timeMs: 900
+          }
+        );
+        if (fallback) {
+          best = fallback;
+        }
+      }
 
       if (!best) {
         turn = (turn === COLOR.ROJO) ? COLOR.NEGRO : COLOR.ROJO;
@@ -293,11 +482,14 @@ export default function mountAI(container){
         return;
       }
 
-      // ✅ Registro de jugada (si logMoves existe)
+      // Registro de jugada (si logMoves existe)
       try {
         if (typeof recordMove === "function") {
-          const fen = (typeof __D10 !== "undefined" && __D10?.fen) ? __D10.fen() : JSON.stringify(board);
-          recordMove({ fen, move: JSON.stringify(best), score: 0 });
+          const fenNow =
+            typeof __D10 !== "undefined" && __D10?.fen
+              ? __D10.fen()
+              : JSON.stringify(board);
+          recordMove({ fen: fenNow, move: JSON.stringify(best), score: 0 });
         }
       } catch {}
 
