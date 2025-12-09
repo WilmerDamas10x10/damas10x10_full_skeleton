@@ -1,4 +1,4 @@
-# ai_engine.py  (IA-ENGINE v4)
+# ai_engine.py  (IA-ENGINE v7)
 # Motor de IA para Damas10x10 (nivel 3 aproximado)
 # - Trabaja con tablero 10x10: lista de listas con 'r','n','R','N' o None
 # - side: "R" (rojo/blancas) o "N" (negras)
@@ -10,7 +10,7 @@ Board = List[List[Optional[str]]]
 Coord = Tuple[int, int]
 
 BOARD_SIZE = 10
-IA_ENGINE_VERSION = "IA-ENGINE v4"
+IA_ENGINE_VERSION = "IA-ENGINE v7"
 
 
 # -------------------------------------------------------
@@ -161,6 +161,8 @@ def _explore_captures_for_piece(
     path: List[Coord],
     captures: List[Coord],
     results: List[Move],
+    start_r: int,
+    start_c: int,
 ) -> None:
     """
     DFS de capturas múltiples para una pieza.
@@ -170,8 +172,12 @@ def _explore_captures_for_piece(
        - 'r': dr = -1 (fila disminuye).
        - 'n': dr = +1 (fila aumenta).
     2) Damas (R/N): capturan en las 4 diagonales (salto corto, 2 casillas).
-    3) NO permitir volver a una casilla ya pisada en la cadena (path),
-       para evitar bucles absurdos.
+    3) NO permitir:
+       - volver a una casilla ya pisada como destino (r_to,c_to) → no estacionarse de nuevo.
+       - usar el casillero inicial (start_r,start_c) como casilla intermedia (r_mid,c_mid)
+         ni como casilla de destino (r_to,c_to).
+       - volver a PASAR o CAER por una casilla donde YA hubo un peón enemigo capturado
+         en esta misma cadena (coordenadas en `captures`).
     """
     piece = board[r][c]
     if piece is None:
@@ -179,6 +185,10 @@ def _explore_captures_for_piece(
 
     enemy_color = "N" if side == "R" else "R"
     found = False
+
+    # Casillas "prohibidas" para esta cadena:
+    forbidden = set(captures)
+    forbidden.add((start_r, start_c))
 
     for dr, dc in DIRECTIONS:
         # Restricción de dirección para peones (solo adelante)
@@ -195,8 +205,15 @@ def _explore_captures_for_piece(
         if not (in_bounds(r_mid, c_mid) and in_bounds(r_to, c_to)):
             continue
 
-        # No volver a casillas ya visitadas
+        # No volver a casillas ya visitadas como destino (no estacionarse de nuevo)
         if (r_to, c_to) in path:
+            continue
+
+        # 🔴 NO podemos NI PASAR (r_mid,c_mid) NI CAER (r_to,c_to)
+        # en casillas que:
+        #  - sean el origen de la cadena
+        #  - o hayan tenido ya un peón enemigo capturado en esta cadena
+        if (r_mid, c_mid) in forbidden or (r_to, c_to) in forbidden:
             continue
 
         mid_piece = board[r_mid][c_mid]
@@ -225,16 +242,18 @@ def _explore_captures_for_piece(
                 new_path,
                 new_captures,
                 results,
+                start_r,
+                start_c,
             )
 
     # Si no encontramos más capturas, registramos la ruta completa
     if not found and captures:
-        start_r, start_c = path[0]
+        start_rr, start_cc = path[0]
         end_r, end_c = path[-1]
         results.append(
             Move(
-                start_r,
-                start_c,
+                start_rr,
+                start_cc,
                 end_r,
                 end_c,
                 captures=list(captures),
@@ -249,6 +268,14 @@ def generate_capture_moves(board: Board, side: str) -> List[Move]:
     aplica la regla de máximo valor capturado:
     - Solo devuelve las jugadas cuya suma de piezas capturadas
       es la máxima posible en la posición.
+    Además:
+      - aplica la restricción de que la dama (o cualquier pieza)
+        no puede volver a caer/pasar por casillas donde ya se capturó
+        un peón enemigo en esta cadena (manejado en _explore_captures_for_piece).
+      - en caso de EMPATE de valor total entre cadenas, se da
+        PREFERENCIA a las jugadas donde la pieza que captura es una DAMA.
+      - si sigue habiendo empate, se prefiere la jugada cuya casilla final
+        esté más "adelantada" en la dirección natural de ese color.
     """
     all_moves: List[Move] = []
 
@@ -268,13 +295,15 @@ def generate_capture_moves(board: Board, side: str) -> List[Move]:
                 path=[(r, c)],
                 captures=[],
                 results=all_moves,
+                start_r=r,
+                start_c=c,
             )
 
     if not all_moves:
         return []
 
-    # Aplicamos regla de máximo valor capturado
-    values = []
+    # --- Regla de máximo valor capturado ---
+    values: List[float] = []
     for mv in all_moves:
         v = sum(piece_value(board[rr][cc]) for (rr, cc) in mv.captures)
         values.append(v)
@@ -286,7 +315,45 @@ def generate_capture_moves(board: Board, side: str) -> List[Move]:
         if captured_value == max_val:
             best_moves.append(mv)
 
-    return best_moves
+    # --- Preferencia de DAMA vs peón (capturador) ---
+    king_moves: List[Move] = []
+    pawn_moves: List[Move] = []
+
+    for mv in best_moves:
+        piece = (
+            board[mv.fr][mv.fc]
+            if 0 <= mv.fr < BOARD_SIZE and 0 <= mv.fc < BOARD_SIZE
+            else None
+        )
+        if is_king(piece):
+            king_moves.append(mv)
+        else:
+            pawn_moves.append(mv)
+
+    if king_moves and pawn_moves:
+        candidate_moves = king_moves
+    else:
+        candidate_moves = best_moves
+
+    # --- Tie-break: preferir la jugada que más AVANZA ---
+    if len(candidate_moves) <= 1:
+        return candidate_moves
+
+    # Para negras: avanzar = fila más grande
+    # Para rojas: avanzar = fila más pequeña
+    if side == "N":
+        best_row = max(mv.tr for mv in candidate_moves)
+        advanced_moves = [mv for mv in candidate_moves if mv.tr == best_row]
+    else:  # side == "R"
+        best_row = min(mv.tr for mv in candidate_moves)
+        advanced_moves = [mv for mv in candidate_moves if mv.tr == best_row]
+
+    # Si tras aplicar avance nos quedamos con algo, usamos eso;
+    # si por alguna razón no, devolvemos candidate_moves tal cual.
+    if advanced_moves:
+        return advanced_moves
+
+    return candidate_moves
 
 
 # -------------------------------------------------------
@@ -333,7 +400,8 @@ def generate_quiet_moves(board: Board, side: str) -> List[Move]:
 
 def generate_legal_moves(board: Board, side: str) -> List[Move]:
     """Respeta la regla de 'si hay capturas, solo capturas', y si las hay,
-    ya vienen filtradas por máximo valor capturado."""
+    ya vienen filtradas por máximo valor capturado + preferencia de dama
+    + preferencia de avance."""
     capture_moves = generate_capture_moves(board, side)
     if capture_moves:
         return capture_moves
@@ -463,15 +531,16 @@ def minimax(
 def choose_ai_capture_move(board: Board, side: str) -> Optional[str]:
     """
     Devuelve la mejor captura inmediata (cadena completa) para 'side',
-    ya respetando la regla de máximo valor capturado.
+    ya respetando:
+      - máximo valor capturado
+      - preferencia de dama (si hay empate peón/dama)
+      - preferencia de avance en caso de empate final.
     Si no hay capturas, devuelve None.
     """
     moves = generate_capture_moves(board, side)
     if not moves:
         return None
 
-    # En este punto, todas las jugadas tienen el mismo valor máximo.
-    # Si quieres, aquí podrías aplicar otro criterio de desempate.
     best_mv = moves[0]
     return best_mv.to_algebraic()
 
@@ -480,14 +549,14 @@ def choose_best_move(board: Board, side: str, depth: int = 4) -> Optional[str]:
     """
     Motor principal:
     - Si hay capturas, generate_legal_moves ya devuelve solo capturas
-      de máximo valor total.
+      de máximo valor total + preferencia de dama + avance.
     - Si no hay capturas, explora también movimientos simples.
     - depth recomendado: 3–5 (cuidado con el rendimiento en servidores lentos).
     """
     if not board or len(board) != BOARD_SIZE:
         return None
 
-    # Para depuración, puedes descomentar esto para ver que se carga v4:
+    # Para depuración, puedes descomentar esto:
     # print(f"[{IA_ENGINE_VERSION}] choose_best_move side={side}, depth={depth}")
 
     _, best_mv = minimax(

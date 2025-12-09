@@ -1,5 +1,7 @@
+// ================================
 // src/ui/pages/AI/index.js
 // IA — Orquestador con Minimax (capturas + quiet + quiescence)
+// ================================
 
 import {
   SIZE, dark, startBoard, drawBoard,
@@ -145,6 +147,145 @@ function parseAlgebraicRoute(str){
     route.push(coord);
   }
   return route;
+}
+
+// ──────────────────────────────────────────────
+// Helpers de validación contra el motor JS
+// ──────────────────────────────────────────────
+function rutasIguales(pathA, pathB){
+  if (!Array.isArray(pathA) || !Array.isArray(pathB)) return false;
+  if (pathA.length !== pathB.length) return false;
+  for (let i = 0; i < pathA.length; i++){
+    const a = pathA[i] || [];
+    const b = pathB[i] || [];
+    if (a[0] !== b[0] || a[1] !== b[1]) return false;
+  }
+  return true;
+}
+
+function rutaCoincideConCapturasMotor(board, path){
+  if (!Array.isArray(path) || path.length < 2) return false;
+  const origin = path[0];
+  if (!Array.isArray(origin) || origin.length < 2) return false;
+
+  const mv = baseMovimientos(board, origin) || {};
+  const caps = mv.captures || mv.capturas || mv.takes || [];
+  if (!Array.isArray(caps) || !caps.length) return false;
+
+  for (const rt of caps){
+    const rPath = (rt && (rt.path || rt.ruta || rt.steps)) || null;
+    if (Array.isArray(rPath) && rutasIguales(rPath, path)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function movimientoCoincideConMotor(board, from, to){
+  if (!Array.isArray(from) || from.length < 2) return false;
+  if (!Array.isArray(to)   || to.length   < 2) return false;
+
+  const mv = baseMovimientos(board, from) || {};
+  const moves = mv.moves || mv.movs || mv.simple || [];
+  if (!Array.isArray(moves)) return false;
+
+  for (const m of moves){
+    if (!m) continue;
+    const dest = m.to || m.dest || m.pos;
+    if (Array.isArray(dest) && dest[0] === to[0] && dest[1] === to[1]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// ──────────────────────────────────────────────
+// NUEVO: Sanitizador de ruta contra “doble vía”
+// (traído del archivo donde sí funcionaba)
+// ──────────────────────────────────────────────
+function sanitizeCapturePathAgainstDoubleVia(board, path){
+  // Esta función NO depende de Python ni de minimax:
+  // solo mira la geometría de la ruta y el tablero JS.
+  if (!Array.isArray(path) || path.length < 2) return null;
+
+  // Clonamos el tablero para simular la cadena sin tocar el real
+  const b = cloneBoard(board);
+  const start = path[0];
+  const piece = b?.[start[0]]?.[start[1]];
+  if (!piece) return null;
+
+  let myColor;
+  try {
+    myColor = colorOf(piece);
+  } catch {
+    return null;
+  }
+
+  const capturedSquares = []; // casillas donde ya hubo peones enemigos capturados
+
+  for (let i = 0; i < path.length - 1; i++){
+    const from = path[i];
+    const to   = path[i + 1];
+
+    const cells = diagPassCells(from, to); // casillas que se pisan al saltar
+    if (!cells.length) {
+      // si no hay casillas intermedias, no es una captura válida
+      return null;
+    }
+
+    // Buscar la pieza enemiga que se está capturando en este salto
+    let mid = null;
+    for (const [r, c] of cells){
+      const ch = b?.[r]?.[c];
+      if (!ch || isGhost(ch)) continue;
+      let chColor;
+      try { chColor = colorOf(ch); } catch { continue; }
+      if (chColor !== myColor){
+        mid = [r, c];
+        break;
+      }
+    }
+    if (!mid) {
+      // no se encontró pieza enemiga en el camino → no es captura
+      return null;
+    }
+
+    // Regla clave: NO podemos ni pasar ni caer por una casilla
+    // donde ya hubo un peón enemigo capturado en esta misma cadena.
+    const repiteIntermedia = cells.some(([r, c]) =>
+      capturedSquares.some(([cr, cc]) => cr === r && cc === c)
+    );
+    const repiteDestino = capturedSquares.some(
+      ([cr, cc]) => cr === to[0] && cc === to[1]
+    );
+
+    if (repiteIntermedia || repiteDestino){
+      // Aquí es donde se produce la “doble vía”.
+      // Cortamos la ruta justo antes de este salto.
+      if (i === 0) {
+        // Si falla en el primer salto, consideramos toda la ruta inválida
+        return null;
+      }
+      const trimmed = path.slice(0, i + 1);
+      console.log("[IA] Ruta recortada para evitar doble vía:", path, "→", trimmed);
+      return trimmed;
+    }
+
+    // Todo bien, registramos la casilla del peón capturado
+    capturedSquares.push(mid);
+
+    // Simulamos el salto en el tablero local
+    const [fr, fc] = from;
+    const [mr, mc] = mid;
+    const [tr, tc] = to;
+    b[fr][fc] = null;
+    b[mr][mc] = null;
+    b[tr][tc] = piece;
+    crownIfNeeded(b, [tr, tc]);
+  }
+
+  // Si llegamos hasta aquí, la ruta completa es legal
+  return path;
 }
 
 export default function mountAI(container){
@@ -319,110 +460,17 @@ export default function mountAI(container){
     try {
       let best = null;
 
-      // 1) Intentar jugada desde Python
-      try {
-        const fen =
-          typeof __D10 !== "undefined" && __D10?.fen
-            ? __D10.fen()
-            : JSON.stringify(board);
+      // 0) ¿Hay capturas disponibles para la IA según el motor JS?
+      const hayCapturasAI = anyCaptureAvailableFor(aiSide);
 
-        const sideCode = aiSide === COLOR.ROJO ? "R" : "N";
-
-        console.log("[IA] (Python) Enviando posición al backend:", {
-          sideCode,
-          fenPreview: typeof fen === "string" ? fen.slice(0, 80) : fen,
-        });
-
-        const respuesta = await pedirJugadaIA(
-          fen,
-          sideCode,
-          board   // enviamos el tablero real al backend Python
-        );
-
-        console.log("[IA] (Python) Sugerencia recibida:", respuesta);
-
-        if (respuesta && typeof respuesta.move === "string") {
-          // Primero intentamos interpretar como RUTA completa "c3-e5-g7"
-          const route = parseAlgebraicRoute(respuesta.move);
-          if (route && route.length >= 2) {
-            // Decidimos si es captura: al menos un salto de 2 y pieza en medio
-            let isCapture = false;
-            for (let i = 0; i < route.length - 1; i++) {
-              const from = route[i];
-              const to   = route[i + 1];
-              const dr = to[0] - from[0];
-              const dc = to[1] - from[1];
-              if (Math.abs(dr) === 2 && Math.abs(dc) === 2) {
-                const mid = findMidOnCurrentBoard(board, from, to);
-                if (mid) {
-                  isCapture = true;
-                  break;
-                }
-              }
-            }
-
-            if (isCapture) {
-              best = {
-                type: "capture",
-                path: route, // cadena completa: [c3, e5, g7, ...]
-              };
-            } else {
-              // No es captura (o no pudimos detectarla), lo tratamos como movimiento simple
-              best = {
-                type: "move",
-                from: route[0],
-                to:   route[route.length - 1],
-              };
-            }
-
-            console.log("[IA] Usando jugada de Python (ruta):", respuesta.move, route, best);
-          } else {
-            // Fallback: jugada simple "e3-f4"
-            const parsed = parseAlgebraicMove(respuesta.move);
-            if (parsed) {
-              const [fr, fc] = parsed.from;
-              const [tr, tc] = parsed.to;
-              const dr = tr - fr;
-              const dc = tc - fc;
-
-              let isCapture = false;
-              if (Math.abs(dr) === 2 && Math.abs(dc) === 2) {
-                const mid = findMidOnCurrentBoard(board, parsed.from, parsed.to);
-                if (mid) {
-                  isCapture = true;
-                }
-              }
-
-              if (isCapture) {
-                best = {
-                  type: "capture",
-                  path: [parsed.from, parsed.to],
-                };
-              } else {
-                best = {
-                  type: "move",
-                  from: parsed.from,
-                  to: parsed.to,
-                };
-              }
-
-              console.log("[IA] Usando jugada de Python (simple):", respuesta.move, parsed, best);
-            } else {
-              console.warn("[IA] No se pudo parsear respuesta.move:", respuesta.move);
-            }
-          }
-        }
-
-      } catch (err) {
-        console.warn("[IA] (Python) Error al llamar a pedirJugadaIA:", err);
-      }
-
-      // 2) Si Python no dio una jugada usable → caer al minimax JS
-      if (!best) {
+      if (hayCapturasAI) {
+        // Si hay capturas, usamos SOLO minimax JS,
+        // que ya respeta Golden y preferencia por dama.
+        console.log("[IA] Capturas disponibles para IA según motor JS → usar SOLO minimax JS");
         best = minimaxChooseBestMove(
           board,
           aiSide,
-          6, // profundidad estable
+          6,
           {
             COLOR, SIZE, colorOf,
             movimientos: baseMovimientos,
@@ -431,17 +479,127 @@ export default function mountAI(container){
             evaluate
           },
           {
-            rootCaptureOnly: false,
+            rootCaptureOnly: true,
             quiescence: true,
             useSEE: true,
             seePenaltyMargin: -0.08,
             timeMs: 900
           }
         );
+      } else {
+        // 1) Sin capturas → podemos usar Python para movimientos tranquilos
+        try {
+          const fen =
+            typeof __D10 !== "undefined" && __D10?.fen
+              ? __D10.fen()
+              : JSON.stringify(board);
+
+          const sideCode = aiSide === COLOR.ROJO ? "R" : "N";
+
+          console.log("[IA] (Python) Enviando posición al backend (sin capturas en JS):", {
+            sideCode,
+            fenPreview: typeof fen === "string" ? fen.slice(0, 80) : fen,
+          });
+
+          const respuesta = await pedirJugadaIA(
+            fen,
+            sideCode,
+            board   // tablero real
+          );
+
+          console.log("[IA] (Python) Sugerencia recibida:", respuesta);
+
+          if (respuesta && typeof respuesta.move === "string") {
+            // Intentamos ruta "c3-e5-g7" → en teoría no habrá capturas,
+            // pero mantenemos lógica por seguridad.
+            const route = parseAlgebraicRoute(respuesta.move);
+            if (route && route.length >= 2) {
+              let isCapture = false;
+              for (let i = 0; i < route.length - 1; i++) {
+                const from = route[i];
+                const to   = route[i + 1];
+                const dr = to[0] - from[0];
+                const dc = to[1] - from[1];
+                if (Math.abs(dr) === 2 && Math.abs(dc) === 2) {
+                  const mid = findMidOnCurrentBoard(board, from, to);
+                  if (mid) {
+                    isCapture = true;
+                    break;
+                  }
+                }
+              }
+
+              if (!isCapture) {
+                // Solo aceptamos como movimiento simple si coincide con el motor JS
+                const from = route[0];
+                const to   = route[route.length - 1];
+                const esValida = movimientoCoincideConMotor(board, from, to);
+                if (esValida) {
+                  best = {
+                    type: "move",
+                    from,
+                    to,
+                  };
+                  console.log("[IA] Usando jugada de Python (ruta simple, validada JS):", respuesta.move, route, best);
+                } else {
+                  console.warn("[IA] Python dio ruta pero el motor JS no la acepta como movimiento simple. Se ignora.");
+                }
+              } else {
+                // Si Python sugiere captura pero JS dijo que no hay capturas, descartamos
+                console.warn("[IA] Python sugirió captura pero JS dice que no hay capturas. Se descarta.");
+              }
+            } else {
+              // Fallback jugada simple "e3-f4"
+              const parsed = parseAlgebraicMove(respuesta.move);
+              if (parsed) {
+                const esValida = movimientoCoincideConMotor(board, parsed.from, parsed.to);
+                if (esValida) {
+                  best = {
+                    type: "move",
+                    from: parsed.from,
+                    to:   parsed.to,
+                  };
+                  console.log("[IA] Usando jugada de Python (simple, validada JS):", respuesta.move, parsed, best);
+                } else {
+                  console.warn("[IA] Jugada simple de Python NO coincide con motor JS. Se descarta.");
+                }
+              } else {
+                console.warn("[IA] No se pudo parsear respuesta.move:", respuesta.move);
+              }
+            }
+          }
+
+        } catch (err) {
+          console.warn("[IA] (Python) Error al llamar a pedirJugadaIA:", err);
+        }
+
+        // 2) Si Python no dio jugada usable → minimax JS (sin capturas)
+        if (!best) {
+          console.log("[IA] Sin jugada usable de Python (quiet), usando minimax JS.");
+          best = minimaxChooseBestMove(
+            board,
+            aiSide,
+            6,
+            {
+              COLOR, SIZE, colorOf,
+              movimientos: baseMovimientos,
+              aplicarMovimiento: baseAplicarMovimiento,
+              crownIfNeeded,
+              evaluate
+            },
+            {
+              rootCaptureOnly: false,
+              quiescence: true,
+              useSEE: true,
+              seePenaltyMargin: -0.08,
+              timeMs: 900
+            }
+          );
+        }
       }
 
-      // 2.5) Si la jugada elegida (Python o minimax) no cuadra con el tablero,
-      //      volvemos a intentar con minimax JS como respaldo.
+      // 2.5) Sanity-check: si la jugada elegida no cuadra con el tablero,
+      //      volvemos a intentarlo con minimax JS.
       if (
         best &&
         best.from && best.to &&
@@ -450,7 +608,7 @@ export default function mountAI(container){
           !board[best.from[0]][best.from[1]]
         )
       ) {
-        console.log("[IA] Jugada de Python no encaja con tablero actual, usando minimax JS (normal mientras el motor sea de prueba)");
+        console.log("[IA] Jugada elegida no encaja con tablero actual, usando minimax JS como respaldo.");
 
         const fallback = minimaxChooseBestMove(
           board,
@@ -464,7 +622,7 @@ export default function mountAI(container){
             evaluate
           },
           {
-            rootCaptureOnly: false,
+            rootCaptureOnly: anyCaptureAvailableFor(aiSide),
             quiescence: true,
             useSEE: true,
             seePenaltyMargin: -0.08,
@@ -494,7 +652,19 @@ export default function mountAI(container){
       } catch {}
 
       if (best.type === "capture") {
-        const path = best.path;
+        // 🔴 Aplicar sanitizado de doble vía ANTES de animar
+        let path = best.path;
+        const sanitized = sanitizeCapturePathAgainstDoubleVia(board, path);
+
+        if (!sanitized || sanitized.length < 2) {
+          console.warn("[IA] Ruta de captura inválida o vacía tras sanitizar. Se mantiene la ruta original (caso extremo).", path);
+        } else {
+          if (sanitized.length < path.length) {
+            console.log("[IA] Ruta de captura recortada para evitar doble vía:", path, "→", sanitized);
+          }
+          path = sanitized;
+        }
+
         try { onMove(); } catch {}
         for (let i=0; i<path.length-1; i++){
           const from = path[i], to = path[i+1];
