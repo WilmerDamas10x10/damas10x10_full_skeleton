@@ -316,6 +316,94 @@ function movimientoCoincideConMotor(board, from, to){
 }
 
 // -------------------------------------------------------
+// Sanitizador de ruta contra “doble vía” (traído del index_doblevia_reparadi)
+// -------------------------------------------------------
+function sanitizeCapturePathAgainstDoubleVia(board, path){
+  // Esta función NO depende de Python ni de minimax:
+  // solo mira la geometría de la ruta y el tablero JS.
+  if (!Array.isArray(path) || path.length < 2) return null;
+
+  // Clonamos el tablero para simular la cadena sin tocar el real
+  const b = cloneBoard(board);
+  const start = path[0];
+  const piece = b?.[start[0]]?.[start[1]];
+  if (!piece) return null;
+
+  let myColor;
+  try {
+    myColor = colorOf(piece);
+  } catch {
+    return null;
+  }
+
+  const capturedSquares = []; // casillas donde ya hubo peones enemigos capturados
+
+  for (let i = 0; i < path.length - 1; i++){
+    const from = path[i];
+    const to   = path[i + 1];
+
+    const cells = diagPassCells(from, to); // casillas que se pisan al saltar
+    if (!cells.length) {
+      // si no hay casillas intermedias, no es una captura válida
+      return null;
+    }
+
+    // Buscar la pieza enemiga que se está capturando en este salto
+    let mid = null;
+    for (const [r, c] of cells){
+      const ch = b?.[r]?.[c];
+      if (!ch || isGhost(ch)) continue;
+      let chColor;
+      try { chColor = colorOf(ch); } catch { continue; }
+      if (chColor !== myColor){
+        mid = [r, c];
+        break;
+      }
+    }
+    if (!mid) {
+      // no se encontró pieza enemiga en el camino → no es captura
+      return null;
+    }
+
+    // Regla clave: NO podemos ni pasar ni caer por una casilla
+    // donde ya hubo un peón enemigo capturado en esta misma cadena.
+    const repiteIntermedia = cells.some(([r, c]) =>
+      capturedSquares.some(([cr, cc]) => cr === r && cc === c)
+    );
+    const repiteDestino = capturedSquares.some(
+      ([cr, cc]) => cr === to[0] && cc === to[1]
+    );
+
+    if (repiteIntermedia || repiteDestino){
+      // Aquí es donde se produce la “doble vía”.
+      // Cortamos la ruta justo antes de este salto.
+      if (i === 0) {
+        // Si falla en el primer salto, consideramos toda la ruta inválida
+        return null;
+      }
+      const trimmed = path.slice(0, i + 1);
+      logIA("[IA] Ruta recortada para evitar doble vía:", path, "→", trimmed);
+      return trimmed;
+    }
+
+    // Todo bien, registramos la casilla del peón capturado
+    capturedSquares.push(mid);
+
+    // Simulamos el salto en el tablero local
+    const [fr, fc] = from;
+    const [mr, mc] = mid;
+    const [tr, tc] = to;
+    b[fr][fc] = null;
+    b[mr][mc] = null;
+    b[tr][tc] = piece;
+    crownIfNeeded(b, [tr, tc]);
+  }
+
+  // Si llegamos hasta aquí, la ruta completa es legal
+  return path;
+}
+
+// -------------------------------------------------------
 // Componente principal IA
 // -------------------------------------------------------
 export default function mountAI(container){
@@ -608,7 +696,8 @@ export default function mountAI(container){
                     ((baseMovimientos(board, from) || {}).moves ||
                      (baseMovimientos(board, from) || {}).movs ||
                      (baseMovimientos(board, from) || {}).simple ||
-                     [])
+                     []
+                    )
                   );
 
                   const pieceBoard = board?.[from[0]]?.[from[1]] || null;
@@ -650,7 +739,8 @@ export default function mountAI(container){
                     ((baseMovimientos(board, parsed.from) || {}).moves ||
                      (baseMovimientos(board, parsed.from) || {}).movs ||
                      (baseMovimientos(board, parsed.from) || {}).simple ||
-                     [])
+                     []
+                    )
                   );
 
                   const pieceBoard = board?.[parsed.from[0]]?.[parsed.from[1]] || null;
@@ -787,7 +877,19 @@ export default function mountAI(container){
       } catch {}
 
       if (best.type === "capture") {
-        const path = best.path;
+        // 🔴 Aplicar sanitizado de doble vía ANTES de animar
+        let path = best.path;
+        const sanitized = sanitizeCapturePathAgainstDoubleVia(board, path);
+
+        if (!sanitized || sanitized.length < 2) {
+          warnIA("[IA] Ruta de captura inválida o vacía tras sanitizar. Se mantiene la ruta original (caso extremo).");
+        } else {
+          if (sanitized.length < path.length) {
+            logIA("[IA] Ruta de captura recortada para evitar doble vía:", path, "→", sanitized);
+          }
+          path = sanitized;
+        }
+
         try { onMove(); } catch {}
         for (let i=0; i<path.length-1; i++){
           const from = path[i], to = path[i+1];
