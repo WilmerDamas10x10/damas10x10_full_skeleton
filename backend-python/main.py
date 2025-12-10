@@ -6,6 +6,7 @@ from typing import Optional, List
 from uuid import uuid4
 from pathlib import Path
 import json
+
 import smtplib
 from email.mime.text import MIMEText
 
@@ -30,6 +31,12 @@ app.add_middleware(
 # "Base de datos" simple: archivo JSON
 # -------------------------------------------------------------------
 USERS_FILE = Path("users.json")
+
+# -------------------------------------------------------------------
+# Ruta donde guardaremos los logs de jugadas de IA
+# -------------------------------------------------------------------
+DATA_DIR = Path("data")
+AI_MOVES_LOG = DATA_DIR / "ai_moves.jsonl"
 
 # -------------------------------------------------------------------
 # Configuración de correo (SMTP)
@@ -143,6 +150,26 @@ class AIMoveResponse(BaseModel):
     """
     move: str  # ej: "e3-f4"
     reason: Optional[str] = None
+
+
+# -------------------------------------------------------------------
+# Modelos para logs de IA (aprendizaje por experiencia)
+# -------------------------------------------------------------------
+class MoveLogEntry(BaseModel):
+    """
+    Una entrada de log de jugada para entrenamiento.
+    """
+    ts: int          # timestamp en ms (Date.now() del frontend)
+    fen: str         # posición en FEN o similar
+    move: str        # jugada, p.ej. "b6-a5" o "__GAME_RESULT__"
+    score: float     # +1 victoria IA, 0 interesante/empate, -1 derrota IA
+
+
+class MoveLogBatch(BaseModel):
+    """
+    Lote de jugadas que el frontend envía para guardar.
+    """
+    entries: List[MoveLogEntry]
 
 
 # -------------------------------------------------------------------
@@ -402,7 +429,7 @@ def choose_ai_capture_move(board: List[List[Optional[str]]], side: str) -> Optio
 
     directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
 
-    best_routes: List[List[tuple[int, int]]] = []
+    best_routes: List[tuple[int, int]] = []
     best_score: float = 0.0
 
     def explore(r: int, c: int, b, score: float, path: List[tuple[int, int]]):
@@ -467,17 +494,50 @@ def choose_ai_capture_move(board: List[List[Optional[str]]], side: str) -> Optio
 
 
 # -------------------------------------------------------------------
-# POST /ai/move  → pedir una jugada a la IA (capturas + motor fuerte)
+# POST /ai/log-moves  → guardar jugadas para entrenamiento IA
+# -------------------------------------------------------------------
+@app.post("/ai/log-moves")
+def ai_log_moves(batch: MoveLogBatch):
+    """
+    Recibe un lote de jugadas desde el frontend y las guarda en un archivo JSONL.
+
+    - No entrena nada todavía.
+    - Solo acumula datos para análisis / entrenamiento posterior.
+    """
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with AI_MOVES_LOG.open("a", encoding="utf-8") as f:
+            for entry in batch.entries:
+                f.write(json.dumps(entry.dict(), ensure_ascii=False) + "\n")
+
+        return {
+            "status": "ok",
+            "saved": len(batch.entries),
+            "file": str(AI_MOVES_LOG),
+        }
+    except Exception as e:
+        print("[AI-LOG] Error guardando logs:", repr(e))
+        raise HTTPException(status_code=500, detail="Error guardando logs de IA")
+
+# -------------------------------------------------------------------
+# POST /ai/move  → pedir una jugada a la IA (SOLO movimientos sin captura)
 # -------------------------------------------------------------------
 @app.post("/ai/move", response_model=AIMoveResponse)
 def ai_move(req: AIMoveRequest):
     """
-    Endpoint IA:
+    Endpoint IA (versión 2):
 
     - Recibe side_to_move ("R" o "N"), fen (opcional) y board (matriz 10x10).
-    - PASO 1: si hay una cadena de captura rentable → SIEMPRE la toma.
-    - PASO 2: si no hay capturas, usa el motor fuerte minimax (choose_best_move).
-    - PASO 3: si todo falla, devuelve una jugada fija de emergencia.
+    - IMPORTANTE: el frontend SOLO debe llamarlo cuando su motor JS
+      ya verificó que NO hay capturas disponibles.
+    - Esta IA Python SOLO propone movimientos "quiet" (sin captura),
+      usando el motor fuerte minimax (choose_best_move).
+
+    Flujo:
+      1) Si no llega tablero → jugada fija de emergencia.
+      2) Llamamos a choose_best_move(board, side, depth).
+      3) Si hay jugada → la devolvemos.
+      4) Si falla o no hay jugada → devolvemos jugada fija.
     """
 
     if not req.board:
@@ -486,31 +546,20 @@ def ai_move(req: AIMoveRequest):
             reason="IA Python: no llegó tablero, usando jugada fija de prueba",
         )
 
-    # 1) Intentar primero una CAPTURA fuerte (obligatoria en damas)
-    try:
-        capture_move = choose_ai_capture_move(req.board, req.side_to_move)
-        if capture_move:
-            return AIMoveResponse(
-                move=capture_move,
-                reason="IA Python: captura forzada por motor de capturas (maximizando peones/damas)",
-            )
-    except Exception as e:
-        print("[AI] Error en choose_ai_capture_move:", repr(e))
-
-    # 2) Si no hay capturas, usamos minimax para un movimiento posicional
     move_str: Optional[str] = None
+
     try:
         # Ajusta depth según rendimiento que veas en la práctica
         move_str = choose_best_move(req.board, req.side_to_move, depth=4)
         if move_str:
             return AIMoveResponse(
                 move=move_str,
-                reason="IA Python (minimax): jugada calculada por motor fuerte",
+                reason="IA Python (minimax): jugada quiet (sin captura) calculada por motor fuerte",
             )
     except Exception as e:
         print("[AI] Error en minimax choose_best_move:", repr(e))
 
-    # 3) Si aún así no hay jugada, devolvemos algo fijo para no romper frontend
+    # Si aún así no hay jugada, devolvemos algo fijo para no romper frontend
     if not move_str:
         move_str = "e3-f4"
         reason = "IA Python: no encontró jugada, usando jugada fija de emergencia"
