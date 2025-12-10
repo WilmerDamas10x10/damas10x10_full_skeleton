@@ -41,3 +41,7 @@ export function recordMove(entry) {
 export function getMoves() {
   return _moves.slice();
 }
+
+export function getRecentMoves(limit = 50) {
+  return _moves.slice(-limit);
+}
