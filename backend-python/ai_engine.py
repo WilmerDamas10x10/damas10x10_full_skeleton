@@ -1,10 +1,11 @@
-# ai_engine.py  (IA-ENGINE v7)
+# ai_engine.py  (IA-ENGINE v7) 
 # Motor de IA para Damas10x10 (nivel 3 aproximado)
 # - Trabaja con tablero 10x10: lista de listas con 'r','n','R','N' o None
 # - side: "R" (rojo/blancas) o "N" (negras)
 # - Devuelve jugadas en formato algebraico: "e3-f4" o "c3-e5-g7" (cadena)
 
 from typing import List, Optional, Tuple
+from experience_engine import experience_bonus  # <-- BONUS DE EXPERIENCIA
 
 Board = List[List[Optional[str]]]
 Coord = Tuple[int, int]
@@ -411,42 +412,119 @@ def generate_legal_moves(board: Board, side: str) -> List[Move]:
 # -------------------------------------------------------
 # Evaluación del tablero
 # -------------------------------------------------------
-
 def evaluate_board(board: Board, side: str) -> float:
     """
-    Evalúa el tablero desde el punto de vista de 'side'.
-    + material propio
-    - material rival
-    + ligera bonificación por avance de peones
+    Evalúa el tablero desde el punto de vista de `side`:
+    - positivo: bueno para `side`
+    - negativo: bueno para el rival
+
+    Heurísticas incluidas:
+      - Material (peón=1, dama=1.5)
+      - Avance de peones
+      - Centralización de damas
+      - Peones en la orilla (penalizados)
+      - Movilidad (cantidad de movimientos quiet disponibles)
+      - BONUS DE EXPERIENCIA (experience_engine.py)
     """
-    own_color = side
+    PAWN_VALUE          = 1.0
+    KING_VALUE          = 1.5
+    ADVANCE_WEIGHT      = 0.01   # bonus por avanzar
+    KING_CENTER_WEIGHT  = 0.06   # damas más cerca del centro
+    EDGE_PENALTY        = 0.03   # peones pegados al borde
+    MOBILITY_WEIGHT     = 0.03   # diferencia de movilidad
+
+    own_color   = side
     enemy_color = "N" if side == "R" else "R"
 
-    own_score = 0.0
+    own_score   = 0.0
     enemy_score = 0.0
+
+    center_row = (BOARD_SIZE - 1) / 2.0
+    center_col = (BOARD_SIZE - 1) / 2.0
 
     for r in range(BOARD_SIZE):
         for c in range(BOARD_SIZE):
             ch = board[r][c]
-            if ch is None:
+            if not ch:
                 continue
 
-            val = piece_value(ch)
             col = piece_color(ch)
+            if col is None:
+                continue
+
+            # ---------------------------
+            # Material base
+            # ---------------------------
+            val = KING_VALUE if is_king(ch) else PAWN_VALUE
 
             if col == own_color:
                 own_score += val
-                # avance de peones según tipo:
-                if ch == "r":
-                    # cuanto más arriba (r pequeño), mejor
-                    own_score += (BOARD_SIZE - 1 - r) * 0.02
-                elif ch == "n":
-                    # cuanto más abajo (r grande), mejor
-                    own_score += r * 0.02
             elif col == enemy_color:
                 enemy_score += val
 
-    return own_score - enemy_score
+            # ---------------------------
+            # Avance de peones
+            # ---------------------------
+            if ch == "r":
+                # 'r' avanza hacia arriba (fila 0)
+                advance = (BOARD_SIZE - 1 - r)
+                if col == own_color:
+                    own_score += advance * ADVANCE_WEIGHT
+                elif col == enemy_color:
+                    enemy_score += advance * ADVANCE_WEIGHT
+            elif ch == "n":
+                # 'n' avanza hacia abajo (fila BOARD_SIZE-1)
+                advance = r
+                if col == own_color:
+                    own_score += advance * ADVANCE_WEIGHT
+                elif col == enemy_color:
+                    enemy_score += advance * ADVANCE_WEIGHT
+
+            # ---------------------------
+            # Centralización de damas
+            # ---------------------------
+            if is_king(ch):
+                dist_center = abs(r - center_row) + abs(c - center_col)
+                center_bonus = max(0.0, 4.0 - dist_center) * KING_CENTER_WEIGHT
+                if col == own_color:
+                    own_score += center_bonus
+                elif col == enemy_color:
+                    enemy_score += center_bonus
+
+            # ---------------------------
+            # Peones en la orilla (menos movilidad)
+            # ---------------------------
+            if ch in ("r", "n") and (c == 0 or c == BOARD_SIZE - 1):
+                if col == own_color:
+                    own_score -= EDGE_PENALTY
+                elif col == enemy_color:
+                    enemy_score -= EDGE_PENALTY
+
+    # ---------------------------
+    # Movilidad: cuántos movimientos quiet tiene cada lado
+    # (este endpoint /ai/move se llama cuando NO hay capturas para `side`)
+    # ---------------------------
+    try:
+        own_moves   = len(generate_quiet_moves(board, own_color))
+        enemy_moves = len(generate_quiet_moves(board, enemy_color))
+        mobility_score = (own_moves - enemy_moves) * MOBILITY_WEIGHT
+    except Exception:
+        # Si algo falla en generación de movimientos, no rompemos la evaluación
+        mobility_score = 0.0
+
+    # Score base (heurística clásica)
+    score = (own_score - enemy_score) + mobility_score
+
+    # ---------------------------------------------
+    # BONUS DE EXPERIENCIA (aprendizaje por partidas)
+    # ---------------------------------------------
+    try:
+        score += experience_bonus(board, side)
+    except Exception as e:
+        # Nunca romper la IA si la experiencia falla
+        print("[AI-EXP] Error aplicando experiencia:", repr(e))
+
+    return score
 
 
 # -------------------------------------------------------

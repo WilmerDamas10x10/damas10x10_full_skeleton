@@ -1,6 +1,6 @@
 // ================================
 // src/ui/api/ia.api.js
-// Cliente JS para la IA en Python (/ai/move)
+// Cliente JS para la IA en Python (/ai/move y /ai/log-moves)
 // ================================
 
 const API_BASE =
@@ -38,14 +38,51 @@ export async function pedirJugadaIA(fen, sideToMove, boardSnapshot) {
   try {
     data = await resp.json();
   } catch {
-    // Si no se puede parsear JSON, devolvemos objeto vacío
     data = {};
   }
 
   if (!resp.ok) {
-    // Lanzamos error genérico sin loguear en consola
     const detail = (data && data.detail) || "Error en backend IA";
     throw new Error(`Error en backend IA (${resp.status}): ${detail}`);
+  }
+
+  return data || {};
+}
+
+/**
+ * Enviar logs de jugadas de IA al backend para que los guarde
+ * en data/ai_moves.jsonl.
+ *
+ * @param {Array<Object>} entries - Lista de jugadas (MoveLogEntry) ya formateadas.
+ *   Normalmente viene de getRecentMoves(n).
+ */
+export async function enviarLogIA(entries) {
+  const payload = { entries };
+
+  let resp;
+  try {
+    resp = await fetch(`${API_BASE}/ai/log-moves`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    // Si el backend no responde (apagado, etc.), lanzamos error
+    throw err;
+  }
+
+  let data = null;
+  try {
+    data = await resp.json();
+  } catch {
+    data = {};
+  }
+
+  if (!resp.ok) {
+    const detail = (data && data.detail) || "Error en backend IA (log-moves)";
+    throw new Error(
+      `Error en backend IA (/ai/log-moves, ${resp.status}): ${detail}`
+    );
   }
 
   return data || {};

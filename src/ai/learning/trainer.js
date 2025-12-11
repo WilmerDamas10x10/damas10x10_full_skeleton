@@ -1,6 +1,6 @@
 // src/ai/learning/trainer.js
 import { getRecentMoves } from "./logMoves.js";
-
+import { enviarLogIA } from "../../ui/api/ia.api.js";
 
 /**
  * Entrenamiento básico a partir de las jugadas guardadas.
@@ -39,15 +39,4 @@ export async function trainModel() {
   }
 
   // más adelante: ajustar pesos reales a partir de estos datos
-}
-
-// Stub temporal mientras conectamos con el backend real de IA.
-// Más adelante moveremos esta función a ia.api.js.
-async function enviarLogIA(data) {
-  console.info(
-    "[learning] (stub enviarLogIA) Se enviarían",
-    data.length,
-    "jugadas al backend."
-  );
-  return { ok: true, stub: true, count: data.length };
 }

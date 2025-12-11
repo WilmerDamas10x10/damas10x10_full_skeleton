@@ -158,18 +158,23 @@ class AIMoveResponse(BaseModel):
 class MoveLogEntry(BaseModel):
     """
     Una entrada de log de jugada para entrenamiento.
+    Hacemos todos los campos OPCIONALES para evitar errores 422 si
+    algún dato viene como null, string, etc.
+    Guardamos lo que llegue "tal cual" y luego lo limpiaremos offline.
     """
-    ts: int          # timestamp en ms (Date.now() del frontend)
-    fen: str         # posición en FEN o similar
-    move: str        # jugada, p.ej. "b6-a5" o "__GAME_RESULT__"
-    score: float     # +1 victoria IA, 0 interesante/empate, -1 derrota IA
+    ts: Optional[int] = None           # timestamp en ms (Date.now() del frontend)
+    fen: Optional[str] = None          # posición en FEN o similar
+    move: Optional[str] = None         # jugada, p.ej. "b6-a5" o "__GAME_RESULT__"
+    score: Optional[float] = None      # +1 victoria IA, 0 interesante/empate, -1 derrota IA
 
 
 class MoveLogBatch(BaseModel):
     """
     Lote de jugadas que el frontend envía para guardar.
+    Hacemos una lista genérica de MoveLogEntry flexibles.
     """
     entries: List[MoveLogEntry]
+
 
 
 # -------------------------------------------------------------------
@@ -519,6 +524,7 @@ def ai_log_moves(batch: MoveLogBatch):
         print("[AI-LOG] Error guardando logs:", repr(e))
         raise HTTPException(status_code=500, detail="Error guardando logs de IA")
 
+
 # -------------------------------------------------------------------
 # POST /ai/move  → pedir una jugada a la IA (SOLO movimientos sin captura)
 # -------------------------------------------------------------------
@@ -535,9 +541,10 @@ def ai_move(req: AIMoveRequest):
 
     Flujo:
       1) Si no llega tablero → jugada fija de emergencia.
-      2) Llamamos a choose_best_move(board, side, depth).
-      3) Si hay jugada → la devolvemos.
-      4) Si falla o no hay jugada → devolvemos jugada fija.
+      2) Elegimos depth según cuántas piezas hay en el tablero.
+      3) Llamamos a choose_best_move(board, side, depth).
+      4) Si hay jugada → la devolvemos.
+      5) Si falla o no hay jugada → devolvemos jugada fija.
     """
 
     if not req.board:
@@ -546,15 +553,33 @@ def ai_move(req: AIMoveRequest):
             reason="IA Python: no llegó tablero, usando jugada fija de prueba",
         )
 
+    # ---------------------------
+    # Elegir profundidad dinámica
+    # ---------------------------
+    total_pieces = sum(1 for row in req.board for cell in row if cell)
+
+    # Apertura / tablero muy lleno
+    if total_pieces >= 26:
+        depth = 4   # antes 3
+    # Medio juego
+    elif total_pieces >= 12:
+        depth = 5   # antes 4
+    # Final
+    else:
+        depth = 6   # antes 5
+
+    # Log en backend (solo consola de Python, NO sale en el navegador)
+    print(f"[AI] ai_move: side={req.side_to_move}, piezas={total_pieces}, depth={depth}")
+
     move_str: Optional[str] = None
 
     try:
-        # Ajusta depth según rendimiento que veas en la práctica
-        move_str = choose_best_move(req.board, req.side_to_move, depth=4)
+        # Llamamos al motor fuerte con la profundidad elegida
+        move_str = choose_best_move(req.board, req.side_to_move, depth=depth)
         if move_str:
             return AIMoveResponse(
                 move=move_str,
-                reason="IA Python (minimax): jugada quiet (sin captura) calculada por motor fuerte",
+                reason=f"IA Python (minimax): jugada quiet con depth={depth}",
             )
     except Exception as e:
         print("[AI] Error en minimax choose_best_move:", repr(e))
