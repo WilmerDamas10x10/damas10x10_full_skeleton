@@ -73,3 +73,29 @@ export function generatePawnCaptures(board, r, c, opts = {}) {
   dfs(board, r, c, [[r, c]], []);
   return routes;
 }
+// -------------------------------------------------------
+// Exports de compatibilidad para index.js y consumidores antiguos
+// -------------------------------------------------------
+
+/**
+ * Alias para compatibilidad: genPawnMoves / movimientosPeon
+ * apuntan a generatePawnMoves.
+ */
+export function genPawnMoves(board, r, c, opts = {}) {
+  return generatePawnMoves(board, r, c, opts);
+}
+export const movimientosPeon = genPawnMoves;
+
+/**
+ * Alias para compatibilidad: genPawnCaptures / capturasPeon
+ * apuntan a generatePawnCaptures.
+ */
+export function genPawnCaptures(board, r, c, opts = {}) {
+  return generatePawnCaptures(board, r, c, opts);
+}
+export const capturasPeon = genPawnCaptures;
+
+/**
+ * Valor base del peón para heurísticas de IA.
+ */
+export const pawnValue = 1.0;

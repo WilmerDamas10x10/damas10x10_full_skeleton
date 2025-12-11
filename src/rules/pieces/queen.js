@@ -121,3 +121,32 @@ export function genQueenCaptures(board, r, c /*, opts = {} */) {
   dfs(board, r, c, new Set(), visitadas0, false, [[r, c]], []);
   return rutas;
 }
+
+// -------------------------------------------------------
+// Exports de compatibilidad para index.js y consumidores antiguos
+// -------------------------------------------------------
+
+/**
+ * Alias para compatibilidad: generateQueenMoves / movimientosDama
+ * apuntan a genQueenMoves.
+ */
+export function generateQueenMoves(board, r, c, opts = {}) {
+  // opts se ignora por ahora; se mantiene por compatibilidad de firma
+  return genQueenMoves(board, r, c /*, opts*/);
+}
+export const movimientosDama = genQueenMoves;
+
+/**
+ * Alias para compatibilidad: generateQueenCaptures / capturasDama
+ * apuntan a genQueenCaptures.
+ */
+export function generateQueenCaptures(board, r, c, opts = {}) {
+  return genQueenCaptures(board, r, c, opts);
+}
+export const capturasDama = genQueenCaptures;
+
+/**
+ * Valor base de la dama para heurísticas de IA.
+ * Regla acordada: dama vale 1.5 peones.
+ */
+export const queenValue = 1.5;
