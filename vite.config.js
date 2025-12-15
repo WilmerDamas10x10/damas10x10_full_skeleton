@@ -60,5 +60,16 @@ export default defineConfig({
     // 🔓 Permitir dominios externos como trycloudflare.com
     allowedHosts: true,
     // allowedHosts: ['pools-overnight-conditions-division.trycloudflare.com'],
+
+    // ============================================================
+    // ✅ PROXY: /ai/* se redirige al backend FastAPI (evita 404 en 5173)
+    // ============================================================
+    proxy: {
+      "/ai": {
+        target: "http://127.0.0.1:8001", // <-- cambia si tu FastAPI usa otro puerto
+        changeOrigin: true,
+        secure: false,
+      },
+    },
   },
 });

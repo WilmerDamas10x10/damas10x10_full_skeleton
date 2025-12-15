@@ -2,6 +2,7 @@ import { navigate } from "@router";
 import { saveLocalAutoFrom } from "./services/snapshot.js";
 import "./editor.responsive.css";
 import { installAssetFallbacks } from "../../../lib/assetFallbacks.js";
+import { pedirJugadaIA } from "../../../api/ia.api.js";
 
 import {
   getEditorTemplate,
@@ -53,6 +54,16 @@ import "./hide-ghosts.css";
 
 // 🆕 WS Bridge para sincronizar FEN/estado por WebSocket
 import { createEditorWSBridge } from "./bridge/ws.bridge.js";
+
+// ✅ FASE 1: Grabación manual IA (Editor)
+import {
+  startAICapture,
+  stopAICapture,
+  isAICapturing,
+  getAICaptureInfo,
+  recordAIMove,
+  flushAICapture,
+} from "./lib/ai.captureSession.js";
 
 /* ============================================================================ */
 
@@ -337,6 +348,62 @@ function ensureBoardVisible(container, board) {
   } catch {}
 }
 
+/* ---------- Helpers IA (Editor) ---------- */
+function parseAlgebraToCoords(moveStr) {
+  // Soporta: "e3-f4" o "c3-e5-g7"
+  // Convención típica: columnas a-j => 0-9, filas 1-10
+  // Nota: si tu algebra usa otra convención, aquí es el único punto a ajustar.
+  const s = String(moveStr || "").trim();
+  if (!s) return null;
+  const parts = s.split("-").map(x => x.trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+
+  const out = [];
+  for (const p of parts) {
+    const m = p.match(/^([a-jA-J])(\d{1,2})$/);
+    if (!m) return null;
+    const file = m[1].toLowerCase().charCodeAt(0) - 97; // a=0
+    const rank = parseInt(m[2], 10); // 1..10
+    if (!(file >= 0 && file < 10)) return null;
+    if (!(rank >= 1 && rank <= 10)) return null;
+
+    // Importante: muchos tableros usan fila 10 arriba (r=0) y 1 abajo (r=9)
+    // Ajuste: r = 10 - rank
+    const r = 10 - rank;
+    const c = file;
+    out.push([r, c]);
+  }
+  return out;
+}
+
+function applyMoveCompat(board, coords) {
+  // Intenta varias firmas comunes sin romper
+  // Devuelve { ok, board: newBoard?, error? }
+  try {
+    // 1) aplicarMovimiento(board, coordsArray)
+    try {
+      const nb = aplicarMovimiento(board, coords);
+      if (Array.isArray(nb)) return { ok: true, board: nb, mode: "aplicarMovimiento(board, coords)" };
+    } catch {}
+
+    // 2) aplicarMovimiento(board, from, to)
+    try {
+      const nb = aplicarMovimiento(board, coords[0], coords[coords.length - 1]);
+      if (Array.isArray(nb)) return { ok: true, board: nb, mode: "aplicarMovimiento(board, from, to)" };
+    } catch {}
+
+    // 3) aplicarMovimiento(board, from, to, coords)
+    try {
+      const nb = aplicarMovimiento(board, coords[0], coords[coords.length - 1], coords);
+      if (Array.isArray(nb)) return { ok: true, board: nb, mode: "aplicarMovimiento(board, from, to, coords)" };
+    } catch {}
+
+    return { ok: false, error: "No pude aplicar la jugada con las firmas conocidas de aplicarMovimiento()." };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+}
+
 /* ---------- Editor ---------- */
 export default function TrainingEditor(container) {
   try { container?.setAttribute("data-editor-root", "1"); } catch {}
@@ -462,6 +529,38 @@ export default function TrainingEditor(container) {
 
   const boardRef = { current: board };
   const setBoardFX = makeSetBoardWithFX(boardEl, boardRef);
+
+    // ==========================
+  // 🧠 Learning bridge (Editor -> logMoves.js)
+  // ==========================
+  function emitLearningMoveFromEditor({ move, score = 0, tag = "editor" } = {}) {
+    try {
+      // lado en formato "R"/"N"
+      const side = (turn === COLOR.ROJO) ? "R" : "N";
+
+      // ✅ tablero 10x10 REAL (sin FEN raro): lo mandamos como JSON string
+      const board10 = boardRef.current;
+      const fen = JSON.stringify(board10);
+
+      // Si no hay move, no lo mandamos como entrenamiento útil
+      if (!move) return false;
+
+      window.dispatchEvent(new CustomEvent("learning:push-move", {
+        detail: {
+          ts: Date.now(),
+          fen,          // ✅ aquí va el tablero 10x10
+          side,         // ✅ "R" o "N"
+          move: String(move),
+          score: Number(score) || 0,
+          tag,
+        }
+      }));
+
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
 
   function setChainFlag(flag){
     if(!boardEl) return;
@@ -589,13 +688,9 @@ export default function TrainingEditor(container) {
       rafId = requestAnimationFrame(() => {
         rafId = 0;
 
-        // 🧹 FIX: si estamos en escritorio ancho (>= 1200px),
-        // limpiamos el layout especial de iPad para que
-        // el editor vuelva a su distribución normal.
         try {
           const w = window.innerWidth || document.documentElement.clientWidth || 0;
           if (w >= 1200) {
-            // 1) Limpiar el flag de "ya apliqué top controls"
             const row =
               document.querySelector("#board-row") ||
               document.querySelector(".board-row") ||
@@ -603,7 +698,6 @@ export default function TrainingEditor(container) {
 
             if (row) {
               row.__topControlsApplied = false;
-              // Quitamos sólo los estilos que fuerza el fix de iPad
               row.style.removeProperty("display");
               row.style.removeProperty("flex-direction");
               row.style.removeProperty("align-items");
@@ -612,7 +706,6 @@ export default function TrainingEditor(container) {
               row.style.removeProperty("padding");
             }
 
-            // 2) Devolver los botones al flujo normal (quitar el grid temporal)
             document
               .querySelectorAll(".top-controls-grid[data-made-by='ipad-fix']")
               .forEach(grid => {
@@ -624,11 +717,8 @@ export default function TrainingEditor(container) {
                 grid.remove();
               });
           }
-        } catch {
-          // Si algo falla, no rompemos el render
-        }
+        } catch {}
 
-        // Layout normal del editor
         try { applyEditorLayout(container); } catch {}
         try { ensureBoardVisible(container, board); } catch {}
         try { render(); } catch {}
@@ -638,10 +728,6 @@ export default function TrainingEditor(container) {
     };
   })();
 
-  // 🆕 Reajuste de layout al cambiar tamaño/zoom de ventana SIN recargar la página
-  // Antes: se detectaba cambio en window.devicePixelRatio y se hacía location.reload(),
-  // lo que en modo SPA hacía que el editor vuelva al menú principal.
-  // Ahora solo reajustamos el layout para que el usuario pueda hacer zoom libremente.
   if (typeof window !== "undefined") {
     window.addEventListener("resize", () => {
       handleResize();
@@ -699,6 +785,13 @@ export default function TrainingEditor(container) {
   }
 
   container.querySelector("#btn-cambiar-turno")?.addEventListener("click", () => {
+    // ✅ FASE 1: si estás grabando, logueamos snapshot del estado antes del cambio manual
+    try {
+      if (isAICapturing()) {
+        recordAIMove({ fen: boardForSave(), side: turn, tag: "editor_switch_turn_btn" });
+      }
+    } catch {}
+
     setPlacing(null);
     stepState = null;
     setChainFlag(false);
@@ -723,7 +816,6 @@ export default function TrainingEditor(container) {
   // 🚀 Copiar FEN → enviar snapshot + FEN crudo
   container.querySelector("#btn-copy-fen")?.addEventListener("click", async () => {
     const res = await copyFenToClipboard({ board, turn });
-    // Además de copiar, empujamos el estado actual por WS
     broadcastSoon("copy-fen", 60);
     toast(
       res?.ok
@@ -738,7 +830,6 @@ export default function TrainingEditor(container) {
   paintState();
   setTurnTextUI();
 
-  // Asegurar pintado del tablero
   ensureBoardVisible(container, board);
   requestAnimationFrame(() => ensureBoardVisible(container, board));
   setTimeout(() => ensureBoardVisible(container, board), 0);
@@ -761,6 +852,13 @@ export default function TrainingEditor(container) {
     controller: {
       continueOrEndChain,
       switchTurn: () => {
+        // ✅ FASE 1: registrar snapshot en el punto “final de jugada” (cambio de turno)
+        try {
+          if (isAICapturing()) {
+            recordAIMove({ fen: boardForSave(), side: turn, tag: "editor_switch_turn_controller" });
+          }
+        } catch {}
+
         try { clearSelectedGlowRemote(boardEl); } catch {}
         switchTurn();
         setTurnTextUI();
@@ -794,6 +892,150 @@ export default function TrainingEditor(container) {
 
   // 👉 Botón de Sonido junto a los botones de la derecha
   placeSfxToggleInRightPanel(container);
+
+  // ==========================
+  // ✅ FASE 1: PANEL IA (Editor)
+  // ==========================
+(function mountAICapturePanel(){
+  const tools = document.getElementById("tools") || container.querySelector("#tools");
+  if (!tools) return;
+
+  // CSS mínimo inline (evita tocar otros .css)
+  try {
+    const id = "ai-capture-panel-css";
+    if (!document.getElementById(id)) {
+      const st = document.createElement("style");
+      st.id = id;
+      st.textContent = `
+        .ai-capture-box{margin-top:8px;display:flex;flex-direction:column;gap:6px}
+        .ai-capture-row{display:flex;gap:6px;flex-wrap:wrap}
+        .ai-capture-state{font-size:12px;opacity:.9}
+        .ai-hide{display:none!important}
+      `;
+      document.head.appendChild(st);
+    }
+  } catch {}
+
+  // Evitar duplicados si re-montas vista
+  tools.querySelector(".ai-capture-box")?.remove();
+
+  const box = document.createElement("div");
+  box.className = "ai-capture-box";
+  box.innerHTML = `
+    <div class="ai-capture-row">
+      <button class="btn" id="btn-ai-toggle" type="button">▶️ Empezar grabación IA</button>
+      <button class="btn" id="btn-ai-play" type="button">🤖 Jugar por la IA</button>
+    </div>
+    <div class="ai-capture-state" id="ai-rec-state"></div>
+  `;
+  tools.appendChild(box);
+
+  const stateEl = box.querySelector("#ai-rec-state");
+  const btnToggle = box.querySelector("#btn-ai-toggle");
+  const btnPlay   = box.querySelector("#btn-ai-play");
+
+  const refresh = () => {
+    const info = getAICaptureInfo();
+    const rec = !!info.recording;
+
+    // ✅ Siempre visible; solo se habilita cuando estás grabando
+    btnPlay.disabled = !rec;
+    btnToggle.textContent = rec
+      ? "⏹️ Detener grabación IA"
+      : "▶️ Empezar grabación IA";
+
+    // estado discreto
+    stateEl.textContent = rec
+      ? `IA: GRABANDO • buffer: ${info.buffered}`
+      : `IA: OFF`;
+  };
+
+  async function stopAndFlush() {
+    const info = stopAICapture();
+    const res = await flushAICapture();
+    if (res.ok) toast(`IA: guardadas ${res.sent} jugadas`, 2400);
+    else {
+      toast("IA: no se pudo guardar (ver consola)", 2600);
+      console.warn("[AI-CAPTURE] flush error:", res);
+    }
+    refresh();
+    return { info, res };
+  }
+
+  btnToggle.onclick = async () => {
+    const info = getAICaptureInfo();
+    if (!info.recording) {
+      // START
+      startAICapture();
+      toast("IA: grabación iniciada", 1600);
+      refresh();
+      return;
+    }
+    // STOP + FLUSH
+    await stopAndFlush();
+  };
+
+  async function playAIMove() {
+    try {
+      // ✅ IMPORTANTE: para que "aprendizaje por experiencia" coincida,
+// mandamos SIEMPRE el tablero 10x10 (boardSnapshot) a pedirJugadaIA().
+const boardSnap = boardRef.current;
+const sideBefore = (turn === COLOR.ROJO) ? "R" : "N";
+
+const data = await pedirJugadaIA("", sideBefore, boardSnap);
+const moveStr = data?.move || data?.jugada || data?.bestMove || null;
+if (!moveStr) { toast("IA: no hay jugada", 2000); return; }
+
+      const coords = parseAlgebraToCoords(moveStr);
+      if (!coords) {
+        toast("IA: formato de jugada no reconocido", 2400);
+        console.warn("[IA] move recibido:", moveStr);
+        return;
+      }
+
+      const applied = applyMoveCompat(board, coords);
+      if (!applied.ok || !applied.board) {
+        toast("IA: no pude aplicar esa jugada (ver consola)", 2600);
+        console.warn("[IA] applyMoveCompat fallo:", applied, { moveStr, coords });
+        return;
+      }
+
+      try { undo.save(); } catch {}
+      setBoardLocal(applied.board, "ai-play");
+      render();
+      paintState();
+
+      // Registrar experiencia SOLO si estamos grabando (que es cuando el botón se muestra)
+      if (isAICapturing()) {
+        recordAIMove({
+          fen: JSON.stringify(boardSnap),
+          side: sideBefore,
+          move: String(moveStr),
+          tag: "editor_ai_play",
+          meta: { applyMode: applied.mode || null },
+        });
+      }
+
+      // ✅ además: empujar al sistema de aprendizaje (logMoves.js) con tablero 10x10
+      emitLearningMoveFromEditor({
+        move: moveStr,
+        score: 0,
+        tag: "editor_ai_play_learning",
+      });
+
+
+      refresh();
+      toast("IA: jugada aplicada", 1400);
+    } catch (e) {
+      console.warn("[IA] playAIMove error:", e);
+      toast("IA: error ejecutando jugada", 2000);
+    }
+  }
+
+  btnPlay.onclick = () => playAIMove();
+
+  refresh();
+})();
 
   // Patch visual: panel izquierdo y tarjeta "Turno" transparentes
   (() => {
@@ -915,7 +1157,6 @@ export default function TrainingEditor(container) {
         : !!_ws?.isOpen?.());
       if (!connected) return; // requiere socket abierto
       const snap = { board: boardRef.current, turn };
-      // Enviar snapshot inmediato (Editor → gateway → pares)
       _ws.safeSend?.({ v: 1, t: "state", payload: snap });
     } catch {}
   };

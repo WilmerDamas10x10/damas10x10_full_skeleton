@@ -24,7 +24,7 @@ import { isGhost } from "@rules";
 import { minimaxChooseBestMove } from "../../../ai/minimax.js";
 import { evaluate } from "../../../ai/eval.js";
 import { pedirJugadaIA } from "../../api/ia.api.js";
-
+import("/src/ai/learning/trainer.js").then(m => m.trainModel());
 const FX_CAPTURE_MS = 2000;
 const FX_MOVE_MS    = 220;
 
@@ -316,7 +316,7 @@ function movimientoCoincideConMotor(board, from, to){
 }
 
 // -------------------------------------------------------
-// Sanitizador de ruta contra “doble vía” (traído del index_doblevia_reparadi)
+// Sanitizador de ruta contra “doble vía” (traído del index_doble_via_reparadi)
 // -------------------------------------------------------
 function sanitizeCapturePathAgainstDoubleVia(board, path){
   // Esta función NO depende de Python ni de minimax:
@@ -657,6 +657,7 @@ export default function mountAI(container){
               fenPreview: typeof fen === "string" ? fen.slice(0, 80) : fen,
             });
 
+            // ✅ PASO CLAVE: enviar (fen, side, board) para evitar 422
             const respuesta = await pedirJugadaIA(
               fen,
               sideCode,

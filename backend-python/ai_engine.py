@@ -1,17 +1,104 @@
-# ai_engine.py  (IA-ENGINE v7) 
+# ai_engine.py  (IA-ENGINE v7+experiencia)
 # Motor de IA para Damas10x10 (nivel 3 aproximado)
 # - Trabaja con tablero 10x10: lista de listas con 'r','n','R','N' o None
 # - side: "R" (rojo/blancas) o "N" (negras)
 # - Devuelve jugadas en formato algebraico: "e3-f4" o "c3-e5-g7" (cadena)
 
-from typing import List, Optional, Tuple
-from experience_engine import experience_bonus  # <-- BONUS DE EXPERIENCIA
+from typing import List, Optional, Tuple, Dict
+from pathlib import Path
+import json
 
 Board = List[List[Optional[str]]]
 Coord = Tuple[int, int]
 
 BOARD_SIZE = 10
 IA_ENGINE_VERSION = "IA-ENGINE v7"
+
+# -------------------------------------------------------------------
+# Archivo donde se guardan las jugadas de experiencia
+# (generado por /ai/log-moves)
+# -------------------------------------------------------------------
+LEARNED_FILE = Path("data/ai_moves.jsonl")
+
+
+# -------------------------------------------------------------------
+# Carga de patrones aprendidos desde ai_moves.jsonl
+# -------------------------------------------------------------------
+def load_learned_patterns(max_lines: int = 5000) -> Dict[str, Dict[str, float]]:
+    """
+    Lee data/ai_moves.jsonl y acumula, para cada FEN, el puntaje de cada jugada.
+
+    Devuelve:
+      patrones: dict
+        {
+          "<fen>": {
+             "<move>": score_acumulado (float),
+             ...
+          },
+          ...
+        }
+    """
+    patrones: Dict[str, Dict[str, float]] = {}
+
+    if not LEARNED_FILE.exists():
+        return patrones
+
+    # Leemos el archivo línea por línea (JSONL)
+    with LEARNED_FILE.open("r", encoding="utf-8") as f:
+        # Si el archivo es muy grande, limitamos el número de líneas procesadas
+        for i, line in enumerate(f):
+            if i >= max_lines:
+                break
+
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                row = json.loads(line)
+            except Exception:
+                # Si una línea está mal formada, la ignoramos
+                continue
+
+            fen = row.get("fen")
+            move = row.get("move")
+            score = float(row.get("score", 0))
+
+            # Ignorar entradas sin FEN o sin jugada,
+            # y también las que son "__GAME_RESULT__"
+            if not fen or not move or move == "__GAME_RESULT__":
+                continue
+
+            d = patrones.setdefault(fen, {})
+            d[move] = d.get(move, 0.0) + score
+
+    return patrones
+
+
+def get_learned_move(fen: Optional[str]) -> Optional[str]:
+    """
+    Si existe una jugada aprendida para este FEN en ai_moves.jsonl,
+    devuelve la jugada con mayor score acumulado. Si no, devuelve None.
+    """
+    if not fen:
+        return None
+
+    patrones = load_learned_patterns()
+    moves_for_fen = patrones.get(fen)
+    if not moves_for_fen:
+        return None
+
+    # Elegimos la jugada con score acumulado más alto
+    best_move, best_score = None, float("-inf")
+    for move_str, score in moves_for_fen.items():
+        if score > best_score:
+            best_score = score
+            best_move = move_str
+
+    if best_move is not None:
+        print(f"[IA-LEARN] Jugada aprendida detectada para FEN: {fen} -> {best_move} (score={best_score})")
+
+    return best_move
 
 
 # -------------------------------------------------------
@@ -424,7 +511,6 @@ def evaluate_board(board: Board, side: str) -> float:
       - Centralización de damas
       - Peones en la orilla (penalizados)
       - Movilidad (cantidad de movimientos quiet disponibles)
-      - BONUS DE EXPERIENCIA (experience_engine.py)
     """
     PAWN_VALUE          = 1.0
     KING_VALUE          = 1.5
@@ -512,19 +598,7 @@ def evaluate_board(board: Board, side: str) -> float:
         # Si algo falla en generación de movimientos, no rompemos la evaluación
         mobility_score = 0.0
 
-    # Score base (heurística clásica)
-    score = (own_score - enemy_score) + mobility_score
-
-    # ---------------------------------------------
-    # BONUS DE EXPERIENCIA (aprendizaje por partidas)
-    # ---------------------------------------------
-    try:
-        score += experience_bonus(board, side)
-    except Exception as e:
-        # Nunca romper la IA si la experiencia falla
-        print("[AI-EXP] Error aplicando experiencia:", repr(e))
-
-    return score
+    return (own_score - enemy_score) + mobility_score
 
 
 # -------------------------------------------------------
@@ -623,9 +697,15 @@ def choose_ai_capture_move(board: Board, side: str) -> Optional[str]:
     return best_mv.to_algebraic()
 
 
-def choose_best_move(board: Board, side: str, depth: int = 4) -> Optional[str]:
+def choose_best_move(
+    board: Board,
+    side: str,
+    depth: int = 4,
+    fen: Optional[str] = None,
+) -> Optional[str]:
     """
     Motor principal:
+    - Primero intenta usar jugadas APRENDIDAS (ai_moves.jsonl) si se pasa un FEN.
     - Si hay capturas, generate_legal_moves ya devuelve solo capturas
       de máximo valor total + preferencia de dama + avance.
     - Si no hay capturas, explora también movimientos simples.
@@ -634,9 +714,13 @@ def choose_best_move(board: Board, side: str, depth: int = 4) -> Optional[str]:
     if not board or len(board) != BOARD_SIZE:
         return None
 
-    # Para depuración, puedes descomentar esto:
-    # print(f"[{IA_ENGINE_VERSION}] choose_best_move side={side}, depth={depth}")
+    # 1) Intentar jugada aprendida por experiencia (match de FEN exacto)
+    learned = get_learned_move(fen)
+    if learned:
+        return learned
 
+    # 2) Si no hay patrón aprendido, usamos minimax normal
+    # print(f"[{IA_ENGINE_VERSION}] choose_best_move side={side}, depth={depth}")
     _, best_mv = minimax(
         board,
         side_to_move=side,

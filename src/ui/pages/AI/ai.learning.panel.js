@@ -33,7 +33,7 @@ export function mountLearningPanel(opts = {}) {
     <button class="btn btn--subtle" id="btn-ai-learn-win">IA ganó</button>
     <button class="btn btn--subtle" id="btn-ai-learn-loss">IA perdió</button>
     <button class="btn btn--subtle" id="btn-ai-learn-draw">Partida interesante</button>
-    <button class="btn btn--subtle" id="btn-ai-learn-stats">Ver resumen</button>
+    <button class="btn btn--subtle" id="btn-ai-learn-stats">Ver resumen / entrenar</button>
   `;
 
   // Insertamos justo debajo del toolbar principal
@@ -86,23 +86,39 @@ export function mountLearningPanel(opts = {}) {
     }
   }
 
+  // ==== NUEVO: los tres botones de resultado también disparan entrenamiento ====
+
   $btnWin?.addEventListener("click", () => {
     console.log("[ai.learning.panel] IA ganó");
     safeRecord(+1);
+    // Disparar envío de logs automáticamente
+    setTimeout(() => {
+      console.log("[ai.learning.panel] Entrenando IA tras 'IA ganó'");
+      safeTrain();
+    }, 300);
   });
 
   $btnLoss?.addEventListener("click", () => {
     console.log("[ai.learning.panel] IA perdió");
     safeRecord(-1);
+    setTimeout(() => {
+      console.log("[ai.learning.panel] Entrenando IA tras 'IA perdió'");
+      safeTrain();
+    }, 300);
   });
 
   $btnDraw?.addEventListener("click", () => {
     console.log("[ai.learning.panel] Partida interesante");
     safeRecord(0);
+    setTimeout(() => {
+      console.log("[ai.learning.panel] Entrenando IA tras 'Partida interesante'");
+      safeTrain();
+    }, 300);
   });
 
+  // Botón extra por si quieres ver resumen / forzar entrenamiento manual
   $btnStats?.addEventListener("click", () => {
-    console.log("[ai.learning.panel] Ver resumen / entrenar");
+    console.log("[ai.learning.panel] Ver resumen / entrenar (manual)");
     safeTrain();
   });
 }

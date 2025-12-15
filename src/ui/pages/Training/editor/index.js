@@ -29,6 +29,9 @@ export { makeController } from "./controller.js";
 export { attachBoardInteractions } from "./interactions.js";
 export { centerBoardWithSidebar, mountTurnDockFixed } from "./layout.js";
 
+// ✅ NUEVO: Re-export del cliente de IA (evita usar fetch("/ai/move") que da 404)
+export { pedirJugadaIA, enviarLogIA } from "../../../api/ia.api.js";
+
 // ──────────────────────────────────────────────────────────────
 // GOLDEN (igual que antes)
 const ENABLE_GOLDEN =

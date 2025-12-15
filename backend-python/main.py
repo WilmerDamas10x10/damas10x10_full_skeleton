@@ -1,17 +1,34 @@
 # main.py
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Body
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, validator, root_validator
-from typing import Optional, List
+from typing import Optional, List, Any, Dict
 from uuid import uuid4
 from pathlib import Path
 import json
+import re
+import time
+import os
+import inspect
 
 import smtplib
 from email.mime.text import MIMEText
 
 # Motor fuerte (minimax u otro) definido en ai_engine.py
 from ai_engine import choose_best_move
+
+
+# =========================
+# CONFIG DEBUG
+# =========================
+DEBUG_AI = True  # pon False cuando ya funcione
+
+
+def dprint(*args):
+    if DEBUG_AI:
+        print(*args)
+
 
 app = FastAPI(
     title="Backend Damas10x10",
@@ -33,18 +50,15 @@ app.add_middleware(
 USERS_FILE = Path("users.json")
 
 # -------------------------------------------------------------------
-# Ruta donde guardaremos los logs de jugadas de IA
+# ✅ Ruta ABSOLUTA donde guardaremos los logs de jugadas de IA
 # -------------------------------------------------------------------
-DATA_DIR = Path("data")
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
 AI_MOVES_LOG = DATA_DIR / "ai_moves.jsonl"
 
 # -------------------------------------------------------------------
-# Configuración de correo (SMTP)
+# Configuración de correo (SMTP) - (si no lo usas, no afecta)
 # -------------------------------------------------------------------
-# ⚠️ IMPORTANTE:
-# - SMTP_USER debe ser tu correo de Gmail.
-# - SMTP_PASSWORD debe ser tu "contraseña de aplicación" de Google
-#   (no tu contraseña normal de Gmail).
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
 SMTP_USER = "TU_CORREO_GMAIL@gmail.com"          # <-- CAMBIAR
@@ -54,14 +68,10 @@ SENDER_EMAIL = SMTP_USER
 
 
 def send_email(to_email: str, subject: str, body: str) -> None:
-    """
-    Envía un correo de texto plano usando SMTP.
-    """
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = f"{SENDER_NAME} <{SENDER_EMAIL}>"
     msg["To"] = to_email
-
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
         server.starttls()
         server.login(SMTP_USER, SMTP_PASSWORD)
@@ -77,7 +87,7 @@ class UserBase(BaseModel):
     province: Optional[str] = None
     email: Optional[EmailStr] = None
     phone: Optional[str] = None
-    profile_photo_url: Optional[str] = None  # luego lo cambiaremos a upload real
+    profile_photo_url: Optional[str] = None
 
     @validator("phone")
     def normalize_phone(cls, v):
@@ -92,10 +102,6 @@ class UserBase(BaseModel):
 
     @root_validator(skip_on_failure=True)
     def at_least_email_or_phone(cls, values):
-        """
-        Forzamos que exista al menos email o teléfono.
-        Si vienen como "" los tratamos como None.
-        """
         email = values.get("email")
         phone = values.get("phone")
 
@@ -113,78 +119,63 @@ class UserBase(BaseModel):
 
 
 class UserCreate(UserBase):
-    # Lo que llega en el registro
     password: str
 
 
 class UserPublic(UserBase):
-    # Lo que devolvemos al frontend (sin contraseña)
     id: str
 
 
 class UserInDB(UserBase):
-    # Lo que guardamos internamente
     id: str
     password_hash: str
 
 
 # -------------------------------------------------------------------
-# Modelos para IA (jugar contra la máquina)
+# Modelos para IA
 # -------------------------------------------------------------------
 class AIMoveRequest(BaseModel):
     """
-    Petición desde el frontend para que la IA piense una jugada.
+    Petición de jugada IA.
 
-    - fen: posición actual (opcional).
-    - side_to_move: "R" o "N" (quién debe jugar).
-    - board: matriz 10x10 con 'r','n','R','N' o None (tablero real).
+    Compatible:
+    - {fen: ..., side: "R"/"N"}
+    - {board: ..., side_to_move: "R"/"N"}
     """
-    fen: Optional[str] = None
-    side_to_move: str  # "R" (rojo/blancas) o "N" (negras)
-    board: Optional[List[List[Optional[str]]]] = None
+    fen: Optional[Any] = None
+    board: Optional[Any] = None
+    side: Optional[str] = None
+    side_to_move: Optional[str] = None
+
+    @root_validator(pre=True)
+    def _normalize(cls, values):
+        if not isinstance(values, dict):
+            return values
+
+        # si mandan board, duplicamos a fen para compat
+        if "fen" not in values and "board" in values:
+            values["fen"] = values.get("board")
+
+        # side alias
+        if "side" not in values:
+            for k in ("side_to_move", "sideToMove", "turn", "color", "lado"):
+                if k in values:
+                    values["side"] = values.get(k)
+                    break
+        return values
 
 
 class AIMoveResponse(BaseModel):
-    """
-    Respuesta básica de la IA.
-    """
-    move: str  # ej: "e3-f4"
+    ok: bool = True
+    move: str
     reason: Optional[str] = None
+    meta: Optional[Dict[str, Any]] = None
 
 
 # -------------------------------------------------------------------
-# Modelos para logs de IA (aprendizaje por experiencia)
-# -------------------------------------------------------------------
-class MoveLogEntry(BaseModel):
-    """
-    Una entrada de log de jugada para entrenamiento.
-    Hacemos todos los campos OPCIONALES para evitar errores 422 si
-    algún dato viene como null, string, etc.
-    Guardamos lo que llegue "tal cual" y luego lo limpiaremos offline.
-    """
-    ts: Optional[int] = None           # timestamp en ms (Date.now() del frontend)
-    fen: Optional[str] = None          # posición en FEN o similar
-    move: Optional[str] = None         # jugada, p.ej. "b6-a5" o "__GAME_RESULT__"
-    score: Optional[float] = None      # +1 victoria IA, 0 interesante/empate, -1 derrota IA
-
-
-class MoveLogBatch(BaseModel):
-    """
-    Lote de jugadas que el frontend envía para guardar.
-    Hacemos una lista genérica de MoveLogEntry flexibles.
-    """
-    entries: List[MoveLogEntry]
-
-
-
-# -------------------------------------------------------------------
-# Utilidades para "hash" y manejo de archivo JSON
+# Utilidades usuarios
 # -------------------------------------------------------------------
 def fake_hash_password(password: str) -> str:
-    """
-    IMPORTANTE:
-    Esto es SOLO TEMPORAL. Más adelante lo cambiaremos a bcrypt.
-    """
     return "fakehashed_" + password
 
 
@@ -200,14 +191,10 @@ def load_users() -> List[UserInDB]:
 
 def save_users(users: List[UserInDB]) -> None:
     data = [u.dict() for u in users]
-    USERS_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    USERS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def user_to_public(u: UserInDB) -> UserPublic:
-    """Convierte el modelo interno (con password_hash) al modelo público."""
     return UserPublic(
         id=u.id,
         name=u.name,
@@ -220,378 +207,379 @@ def user_to_public(u: UserInDB) -> UserPublic:
 
 
 # -------------------------------------------------------------------
-# Endpoint de salud
+# Health
 # -------------------------------------------------------------------
 @app.get("/health")
 def health():
     return {"status": "ok", "message": "Backend Damas10x10 funcionando"}
 
 
-# -------------------------------------------------------------------
-# POST /register  → registrar usuario
-# -------------------------------------------------------------------
-@app.post("/register", response_model=UserPublic)
-def register(user_in: UserCreate):
-    users = load_users()
-
-    # Validar que email o teléfono no estén repetidos
-    for u in users:
-        if user_in.email and u.email == user_in.email:
-            raise HTTPException(
-                status_code=400,
-                detail="Ya existe un usuario con ese email",
-            )
-        if user_in.phone and u.phone == user_in.phone:
-            raise HTTPException(
-                status_code=400,
-                detail="Ya existe un usuario con ese teléfono",
-            )
-
-    user_id = str(uuid4())
-
-    # Creamos el usuario interno con password_hash
-    user_db = UserInDB(
-        id=user_id,
-        name=user_in.name,
-        city=user_in.city,
-        province=user_in.province,
-        email=user_in.email,
-        phone=user_in.phone,
-        profile_photo_url=user_in.profile_photo_url,
-        password_hash=fake_hash_password(user_in.password),
-    )
-
-    users.append(user_db)
-    save_users(users)
-
-    # Devolvemos versión pública sin contraseña
-    return user_to_public(user_db)
+@app.get("/ai")
+def ai_root():
+    return {"ok": True, "hint": "Use POST /ai/move, POST /ai/train, POST /ai/log-moves"}
 
 
 # -------------------------------------------------------------------
-# POST /login  → iniciar sesión
+# Helpers: payload logs
 # -------------------------------------------------------------------
-class LoginInput(BaseModel):
-    email: Optional[EmailStr] = None
-    phone: Optional[str] = None
-    password: str
+def _normalize_log_payload(payload: Any) -> List[dict]:
+    if payload is None:
+        return []
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for k in ("entries", "moves", "data", "logs", "items"):
+            v = payload.get(k)
+            if isinstance(v, list):
+                return v
+        return [payload]
+    return []
 
-    @validator("phone")
-    def normalize_phone_login(cls, v):
-        if v is None:
+
+def _safe_stat_size(p: Path) -> int:
+    try:
+        return p.stat().st_size
+    except Exception:
+        return 0
+
+
+# -------------------------------------------------------------------
+# ✅ LIMPIEZA/Canonización 10×10 (CRÍTICO)
+# -------------------------------------------------------------------
+_ALLOWED = {"r", "n", "R", "N"}
+
+
+def _try_json_load_if_str(x: Any) -> Any:
+    if isinstance(x, str):
+        s = x.strip()
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                return json.loads(s)
+            except Exception:
+                return None
+    return x
+
+
+def _clean_cell(cell: Any) -> Any:
+    if cell is None:
+        return None
+    if isinstance(cell, dict):
+        return None
+    if isinstance(cell, (list, tuple)):
+        return None
+    if isinstance(cell, str):
+        s = cell.strip()
+        if s in _ALLOWED:
+            return s
+        if s.lower() in ("null", "none", ""):
             return None
-        v = v.strip()
-        return v or None
-
-    @root_validator(skip_on_failure=True)
-    def check_email_or_phone(cls, values):
-        email = values.get("email")
-        phone = values.get("phone")
-
-        if isinstance(email, str):
-            email = email.strip() or None
-        if isinstance(phone, str):
-            phone = phone.strip() or None
-
-        if not email and not phone:
-            raise ValueError("Debes ingresar email o teléfono")
-
-        values["email"] = email
-        values["phone"] = phone
-        return values
+        return None
+    return None
 
 
-@app.post("/login", response_model=UserPublic)
-def login(data: LoginInput):
-    users = load_users()
-
-    # DEBUG: ver qué llegó realmente
-    print(f"[LOGIN] email={data.email!r}, phone={data.phone!r}")
-
-    # Buscar al usuario según email o teléfono
-    user = None
-    for u in users:
-        if data.email and u.email == data.email:
-            user = u
-            break
-        if data.phone and u.phone == data.phone:
-            user = u
-            break
-
-    if not user:
-        raise HTTPException(status_code=400, detail="Usuario no encontrado")
-
-    # Verificar contraseña
-    if user.password_hash != fake_hash_password(data.password):
-        raise HTTPException(status_code=400, detail="Contraseña incorrecta")
-
-    # Si todo está correcto, devolvemos el usuario sin contraseña
-    return user_to_public(user)
+def _normalize_board_10x10(x: Any) -> Optional[List[List[Any]]]:
+    x = _try_json_load_if_str(x)
+    if not isinstance(x, list) or len(x) != 10:
+        return None
+    out: List[List[Any]] = []
+    for r in range(10):
+        row = x[r]
+        if not isinstance(row, list) or len(row) != 10:
+            return None
+        out_row = [_clean_cell(row[c]) for c in range(10)]
+        out.append(out_row)
+    return out
 
 
-# -------------------------------------------------------------------
-# GET /users  → listar todos los usuarios (públicos)
-# -------------------------------------------------------------------
-@app.get("/users", response_model=List[UserPublic])
-def list_users():
-    users = load_users()
-    return [user_to_public(u) for u in users]
+def _canon_board_key(board_10: List[List[Any]]) -> str:
+    return json.dumps(board_10, ensure_ascii=False, separators=(",", ":"))
 
 
-# -------------------------------------------------------------------
-# GET /me  → obtener datos de un usuario concreto (versión simple)
-# -------------------------------------------------------------------
-@app.get("/me", response_model=UserPublic)
-def get_me(email: Optional[EmailStr] = None, phone: Optional[str] = None):
-    """
-    Versión sencilla de /me:
-    - Por ahora recibe email o phone como query param.
-    - Más adelante lo cambiaremos para que use token (JWT).
-      Ejemplos:
-        /me?email=wilmer@example.com
-        /me?phone=0991234567
-    """
-    if not email and not phone:
-        raise HTTPException(
-            status_code=400,
-            detail="Debes enviar email o teléfono como parámetro",
-        )
+def _normalize_side(side_raw: Any) -> str:
+    s = str(side_raw or "R").strip().upper()
+    if s in ("ROJO", "R", "WHITE", "W", "BLANCO", "BLANCAS"):
+        return "R"
+    if s in ("NEGRO", "N", "BLACK", "B", "NEGRAS"):
+        return "N"
+    return "R" if s.startswith("R") else "N"
 
-    users = load_users()
 
-    for u in users:
-        if email and u.email == email:
-            return user_to_public(u)
-        if phone and u.phone == phone:
-            return user_to_public(u)
+def _canon_key_any(x: Any) -> Optional[str]:
+    if x is None:
+        return None
+    if isinstance(x, list):
+        b = _normalize_board_10x10(x)
+        if b is None:
+            return None
+        return _canon_board_key(b)
+    if isinstance(x, str):
+        s = x.strip()
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                tmp = json.loads(s)
+            except Exception:
+                return None
+            b = _normalize_board_10x10(tmp)
+            if b is None:
+                return None
+            return _canon_board_key(b)
+        return None
+    return None
 
-    raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+def _append_jsonl_line(path: Path, row: dict) -> None:
+    line = json.dumps(row, ensure_ascii=False)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8", newline="\n") as f:
+        f.write(line + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 # -------------------------------------------------------------------
-# POST /test-email  → enviar un correo de prueba
+# Stats de log
 # -------------------------------------------------------------------
-class TestEmailInput(BaseModel):
-    email: EmailStr
-
-
-@app.post("/test-email")
-def test_email(data: TestEmailInput):
-    """
-    Envía un correo de prueba al email indicado.
-    Úsalo solo para comprobar que la configuración SMTP funciona.
-    """
+@app.get("/ai/log-stats")
+def ai_log_stats():
     try:
-        send_email(
-            data.email,
-            "Prueba de correo - Reino de las Damas",
-            "Hola,\n\nEste es un correo de prueba enviado desde el backend de Damas10x10.\n\nSi ves este mensaje, el envío está funcionando correctamente.",
-        )
-        return {"ok": True, "message": f"Correo enviado a {data.email}"}
+        abs_path = AI_MOVES_LOG.resolve()
+        exists = AI_MOVES_LOG.exists()
+        size = _safe_stat_size(AI_MOVES_LOG) if exists else 0
+        return {"cwd": os.getcwd(), "file": str(AI_MOVES_LOG), "abs": str(abs_path), "exists": exists, "bytes": size}
     except Exception as e:
-        print("[EMAIL] Error al enviar:", repr(e))
-        raise HTTPException(
-            status_code=500,
-            detail="No se pudo enviar el correo. Revisa la consola del servidor.",
-        )
+        raise HTTPException(status_code=500, detail=f"log-stats error: {repr(e)}")
 
 
 # -------------------------------------------------------------------
-# IA: motor de CAPTURAS en Python usando la matriz board
+# Guardar logs
 # -------------------------------------------------------------------
-def choose_ai_capture_move(board: List[List[Optional[str]]], side: str) -> Optional[str]:
-    """
-    Motor Python para CAPTURAS (solo capturas):
-    - Detecta todas las rutas de captura posibles (saltos encadenados).
-    - Calcula el valor de cada ruta (peón=1, dama=1.5).
-    - Elige la ruta de mayor puntaje.
-    - Devuelve solo el PRIMER tramo de la cadena en formato "e3-f4",
-      para que el motor JS continúe la secuencia.
-    """
-
-    if not board:
-        return None
-
-    ROWS = len(board)
-    COLS = len(board[0]) if ROWS > 0 else 0
-
-    own = ("r", "R") if side == "R" else ("n", "N")
-    opp = ("n", "N") if side == "R" else ("r", "R")
-
-    def piece_value(ch: Optional[str]) -> float:
-        if ch is None:
-            return 0.0
-        if ch in ("R", "N"):
-            return 1.5
-        if ch in ("r", "n"):
-            return 1.0
-        return 0.0
-
-    def to_alg(r: int, c: int) -> str:
-        col_letter = chr(ord("a") + c)
-        row_num = ROWS - r
-        return f"{col_letter}{row_num}"
-
-    directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
-
-    best_routes: List[tuple[int, int]] = []
-    best_score: float = 0.0
-
-    def explore(r: int, c: int, b, score: float, path: List[tuple[int, int]]):
-        nonlocal best_routes, best_score
-
-        found_capture = False
-
-        for dr, dc in directions:
-            r_mid = r + dr
-            c_mid = c + dc
-            r_to = r + 2 * dr
-            c_to = c + 2 * dc
-
-            if not (0 <= r_mid < ROWS and 0 <= c_mid < COLS):
-                continue
-            if not (0 <= r_to < ROWS and 0 <= c_to < COLS):
-                continue
-
-            mid = b[r_mid][c_mid]
-            dest = b[r_to][c_to]
-
-            # Captura: pieza rival en medio y casilla de aterrizaje libre
-            if mid in opp and dest is None:
-                found_capture = True
-
-                newb = [row[:] for row in b]
-                newb[r][c] = None
-                newb[r_mid][c_mid] = None
-                newb[r_to][c_to] = b[r][c]
-
-                new_score = score + piece_value(mid)
-                new_path = path + [(r_to, c_to)]
-
-                explore(r_to, c_to, newb, new_score, new_path)
-
-        if not found_capture and score > 0:
-            # Ruta completa
-            if score > best_score:
-                best_score = score
-                best_routes = [path]
-            elif score == best_score:
-                best_routes.append(path)
-
-    # Lanzar búsqueda de rutas desde cada pieza propia
-    for r in range(ROWS):
-        for c in range(COLS):
-            ch = board[r][c]
-            if ch in own:
-                explore(r, c, board, 0.0, [(r, c)])
-
-    if not best_routes:
-        return None
-
-    # Elegimos la primera ruta con puntaje máximo
-    route = best_routes[0]
-    if len(route) < 2:
-        return None
-
-    fr, fc = route[0]
-    tr, tc = route[1]
-    return f"{to_alg(fr, fc)}-{to_alg(tr, tc)}"
-
-
-# -------------------------------------------------------------------
-# POST /ai/log-moves  → guardar jugadas para entrenamiento IA
-# -------------------------------------------------------------------
-@app.post("/ai/log-moves")
-def ai_log_moves(batch: MoveLogBatch):
-    """
-    Recibe un lote de jugadas desde el frontend y las guarda en un archivo JSONL.
-
-    - No entrena nada todavía.
-    - Solo acumula datos para análisis / entrenamiento posterior.
-    """
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        with AI_MOVES_LOG.open("a", encoding="utf-8") as f:
-            for entry in batch.entries:
-                f.write(json.dumps(entry.dict(), ensure_ascii=False) + "\n")
-
+def _append_moves_to_jsonl(entries_raw: List[Any]) -> Dict[str, Any]:
+    if not entries_raw:
         return {
             "status": "ok",
-            "saved": len(batch.entries),
+            "saved": 0,
+            "skipped": 0,
+            "bytes": _safe_stat_size(AI_MOVES_LOG) if AI_MOVES_LOG.exists() else 0,
             "file": str(AI_MOVES_LOG),
+            "abs": str(AI_MOVES_LOG.resolve()),
+            "reason": "empty",
         }
+
+    saved = 0
+    skipped = 0
+
+    for item in entries_raw:
+        if not isinstance(item, dict):
+            skipped += 1
+            continue
+
+        board_raw = item.get("board", None)
+        if board_raw is None:
+            board_raw = item.get("fen", None)
+
+        board_10 = _normalize_board_10x10(board_raw)
+        if board_10 is None:
+            skipped += 1
+            continue
+
+        move = item.get("move", None)
+        if move is None or (isinstance(move, str) and not move.strip()):
+            skipped += 1
+            continue
+
+        ts = item.get("ts", None)
+        score = item.get("score", 0)
+        side = _normalize_side(item.get("side", None))
+
+        try:
+            ts = int(ts) if ts is not None else int(time.time() * 1000)
+        except Exception:
+            ts = int(time.time() * 1000)
+
+        try:
+            score = float(score) if score is not None else 0.0
+        except Exception:
+            score = 0.0
+
+        key = _canon_board_key(board_10)
+        row = {"ts": ts, "fen": key, "key": key, "move": str(move).strip(), "score": score, "side": side}
+        _append_jsonl_line(AI_MOVES_LOG, row)
+        saved += 1
+
+    return {
+        "status": "ok",
+        "saved": saved,
+        "skipped": skipped,
+        "bytes": _safe_stat_size(AI_MOVES_LOG),
+        "file": str(AI_MOVES_LOG),
+        "abs": str(AI_MOVES_LOG.resolve()),
+    }
+
+
+@app.post("/ai/log-moves")
+def ai_log_moves(payload: Any = Body(...)):
+    try:
+        entries_raw = _normalize_log_payload(payload)
+        return _append_moves_to_jsonl(entries_raw)
     except Exception as e:
         print("[AI-LOG] Error guardando logs:", repr(e))
-        raise HTTPException(status_code=500, detail="Error guardando logs de IA")
+        raise HTTPException(status_code=500, detail="Error guardando logs de IA (ver consola backend)")
+
+
+@app.post("/ai/train")
+def ai_train(batch: Any = Body(...)):
+    try:
+        moves_raw = _normalize_log_payload(batch)
+        return _append_moves_to_jsonl(moves_raw)
+    except Exception as e:
+        print("[AI-TRAIN] Error:", repr(e))
+        raise HTTPException(status_code=500, detail="Error en /ai/train (ver consola backend)")
 
 
 # -------------------------------------------------------------------
-# POST /ai/move  → pedir una jugada a la IA (SOLO movimientos sin captura)
+# Adaptador choose_best_move
+# -------------------------------------------------------------------
+def _choose_best_move_safe(board_obj: Any, side: str, level: int = 3):
+    try:
+        sig = inspect.signature(choose_best_move)
+        params = set(sig.parameters.keys())
+    except Exception:
+        params = set()
+
+    for name in ("side_to_move", "to_move", "turn", "color", "player", "side"):
+        if name in params:
+            try:
+                if "level" in params:
+                    return choose_best_move(board_obj, **{name: side}, level=level)
+                return choose_best_move(board_obj, **{name: side})
+            except TypeError:
+                break
+
+    try:
+        return choose_best_move(board_obj, side, level=level)
+    except TypeError:
+        return choose_best_move(board_obj, side)
+
+
+# -------------------------------------------------------------------
+# /ai/move — experiencia (match por key canon) + fallback
 # -------------------------------------------------------------------
 @app.post("/ai/move", response_model=AIMoveResponse)
 def ai_move(req: AIMoveRequest):
-    """
-    Endpoint IA (versión 2):
+    side = _normalize_side(req.side or req.side_to_move or "R")
+    dprint(f"[AI.DEBUG] /ai/move side_norm={side!r}")
 
-    - Recibe side_to_move ("R" o "N"), fen (opcional) y board (matriz 10x10).
-    - IMPORTANTE: el frontend SOLO debe llamarlo cuando su motor JS
-      ya verificó que NO hay capturas disponibles.
-    - Esta IA Python SOLO propone movimientos "quiet" (sin captura),
-      usando el motor fuerte minimax (choose_best_move).
+    board_raw = req.board if req.board is not None else req.fen
+    dprint(f"[AI.DEBUG] /ai/move board_raw type={type(board_raw).__name__}")
 
-    Flujo:
-      1) Si no llega tablero → jugada fija de emergencia.
-      2) Elegimos depth según cuántas piezas hay en el tablero.
-      3) Llamamos a choose_best_move(board, side, depth).
-      4) Si hay jugada → la devolvemos.
-      5) Si falla o no hay jugada → devolvemos jugada fija.
-    """
-
-    if not req.board:
-        return AIMoveResponse(
-            move="e3-f4",
-            reason="IA Python: no llegó tablero, usando jugada fija de prueba",
+    board_10 = _normalize_board_10x10(board_raw)
+    if board_10 is None:
+        dprint("[AI.DEBUG] invalid_board: board inválido o no 10x10. Ejemplo head:", str(board_raw)[:180])
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": False,
+                "move": "",
+                "reason": "invalid_board",
+                "detail": "Board inválido: se esperaba lista 10x10 (o string JSON de lista 10x10).",
+            },
         )
 
-    # ---------------------------
-    # Elegir profundidad dinámica
-    # ---------------------------
-    total_pieces = sum(1 for row in req.board for cell in row if cell)
+    key = _canon_board_key(board_10)
+    dprint("[AI.DEBUG] key(len)=", len(key))
 
-    # Apertura / tablero muy lleno
-    if total_pieces >= 26:
-        depth = 4   # antes 3
-    # Medio juego
-    elif total_pieces >= 12:
-        depth = 5   # antes 4
-    # Final
-    else:
-        depth = 6   # antes 5
+    # 1) experiencia exacta por key + side
+    def normalize_move_to_algebra(move_val: Any) -> Optional[str]:
+        if move_val is None:
+            return None
+        if isinstance(move_val, str):
+            s2 = move_val.strip().lower()
+            if re.match(r"^[a-j]\d{1,2}(-[a-j]\d{1,2})+$", s2):
+                return s2
+        return None
 
-    # Log en backend (solo consola de Python, NO sale en el navegador)
-    print(f"[AI] ai_move: side={req.side_to_move}, piezas={total_pieces}, depth={depth}")
+    def find_experience_move_exact(key_local: str, side_local: str, max_scan: int = 6000) -> Optional[Dict[str, Any]]:
+        try:
+            if not AI_MOVES_LOG.exists():
+                dprint("[AI.DEBUG] experience: log no existe:", AI_MOVES_LOG)
+                return None
 
-    move_str: Optional[str] = None
+            lines = AI_MOVES_LOG.read_text(encoding="utf-8", errors="ignore").splitlines()
+            dprint(f"[AI.DEBUG] experience: total_lines={len(lines)} scan_last={min(max_scan, len(lines))}")
 
+            for line in reversed(lines[-max_scan:]):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+
+                # ✅ CANONIZAR row_key venga como string o lista
+                row_key = _canon_key_any(row.get("key")) or _canon_key_any(row.get("fen"))
+                if not row_key or row_key != key_local:
+                    continue
+
+                row_side = _normalize_side(row.get("side") or side_local)
+                if row_side != side_local:
+                    continue
+
+                mv = normalize_move_to_algebra(row.get("move"))
+                if mv:
+                    dprint("[AI.DEBUG] experience HIT ✅", mv)
+                    return {"move": mv, "row": row}
+
+            dprint("[AI.DEBUG] experience MISS ❌")
+            return None
+        except Exception as e:
+            dprint("[AI.DEBUG] experience ERROR:", repr(e))
+            return None
+
+    exp = find_experience_move_exact(key, side)
+    if exp:
+        return AIMoveResponse(
+            ok=True,
+            move=exp["move"],
+            reason="experiencia_exacta",
+            meta={"source": "ai_moves.jsonl", "ts": exp["row"].get("ts"), "side": side},
+        )
+
+    # 2) fallback minimax
     try:
-        # Llamamos al motor fuerte con la profundidad elegida
-        move_str = choose_best_move(req.board, req.side_to_move, depth=depth)
-        if move_str:
-            return AIMoveResponse(
-                move=move_str,
-                reason=f"IA Python (minimax): jugada quiet con depth={depth}",
+        dprint("[AI.DEBUG] fallback minimax (sin experiencia)")
+        move_str = _choose_best_move_safe(board_10, side=side, level=3)
+
+        # Si no hay jugada con side actual, probamos el lado contrario
+        if not move_str or not isinstance(move_str, str) or not move_str.strip():
+            other = "N" if side == "R" else "R"
+            dprint(f"[AI.DEBUG] minimax no encontró jugada con side={side}. Reintentando con side={other}...")
+            move_str2 = _choose_best_move_safe(board_10, side=other, level=3)
+
+            if move_str2 and isinstance(move_str2, str) and move_str2.strip():
+                return AIMoveResponse(
+                    ok=True,
+                    move=move_str2.strip(),
+                    reason="minimax_side_flip",
+                    meta={"side": other},
+                )
+
+            # ❗ Ninguno de los dos lados encontró jugada
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "ok": False,
+                    "move": "",
+                    "reason": "no_legal_move",
+                    "detail": "La IA no encontró jugada legal (board/turn/reglas).",
+                },
             )
+
+        # ✅ Jugada encontrada con el lado original
+        return AIMoveResponse(ok=True, move=move_str.strip(), reason="minimax", meta={"side": side})
+
+    except HTTPException:
+        raise
     except Exception as e:
         print("[AI] Error en minimax choose_best_move:", repr(e))
-
-    # Si aún así no hay jugada, devolvemos algo fijo para no romper frontend
-    if not move_str:
-        move_str = "e3-f4"
-        reason = "IA Python: no encontró jugada, usando jugada fija de emergencia"
-    else:
-        reason = "IA Python: jugada de emergencia"
-
-    return AIMoveResponse(
-        move=move_str,
-        reason=reason,
-    )
+        raise HTTPException(status_code=500, detail=f"Error IA: {e}")
