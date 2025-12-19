@@ -1,8 +1,9 @@
 // src/ui/api/ia.api.js
 // Cliente del backend IA (FastAPI) usando PROXY de Vite (/ai/*)
 // - Evita mixed-content cuando el frontend está en https://localhost:5173
-// - NO lanza excepción en 422/400/etc: devuelve ok:false para fallback JS
+// - NO lanza excepción en 422/400/500/etc: devuelve ok:false para fallback JS
 // - Incluye TIMEOUT para que nunca quede colgado
+// - ✅ MUESTRA el error real: intenta JSON y si no, lee texto (traceback)
 
 function isDebugIA() {
   try {
@@ -41,7 +42,6 @@ function cleanBoard10x10(board) {
         else outRow.push(null);
         continue;
       }
-      // objetos/ghost/etc
       outRow.push(null);
     }
     out.push(outRow);
@@ -55,30 +55,54 @@ function canonBoardJson(board10) {
 
 function normalizeSide(sideToMove) {
   const s = String(sideToMove || "R").trim().toUpperCase();
-  if (s === "R" || s === "ROJO" || s === "W" || s === "WHITE" || s === "BLANCO") return "R";
-  if (s === "N" || s === "NEGRO" || s === "B" || s === "BLACK" || s === "NEGRAS") return "N";
+  if (["R","ROJO","W","WHITE","BLANCO","BLANCAS"].includes(s)) return "R";
+  if (["N","NEGRO","B","BLACK","NEGRAS"].includes(s)) return "N";
   return s.startsWith("R") ? "R" : "N";
 }
 
 function isAbortError(e) {
   try {
-    return e?.name === "AbortError" || String(e?.message || "").toLowerCase().includes("aborted");
+    return e?.name === "AbortError" ||
+      String(e?.message || "").toLowerCase().includes("aborted");
   } catch {
     return false;
   }
 }
 
-async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 5200) {
+/**
+ * ✅ LECTOR ROBUSTO:
+ * - intenta JSON
+ * - si no es JSON o falla, intenta texto (útil para 500 con traceback)
+ */
+async function readBodySmart(resp) {
+  if (!resp) return { data: null, bodyText: null };
+  const ct = (resp.headers?.get?.("content-type") || "").toLowerCase();
+
+  if (ct.includes("application/json") || ct.includes("+json")) {
+    try {
+      const data = await resp.clone().json();
+      return { data, bodyText: null };
+    } catch {}
+  }
+
+  try {
+    const bodyText = await resp.clone().text();
+    return { data: null, bodyText: bodyText || null };
+  } catch {
+    return { data: null, bodyText: null };
+  }
+}
+
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 12000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
 
   try {
     const resp = await fetch(url, { ...options, signal: ctrl.signal });
-    let data = null;
-    try { data = await resp.json(); } catch {}
-    return { resp, data };
+    const { data, bodyText } = await readBodySmart(resp);
+    return { resp, data, bodyText, error: null };
   } catch (e) {
-    return { resp: null, data: null, error: e };
+    return { resp: null, data: null, bodyText: null, error: e };
   } finally {
     clearTimeout(t);
   }
@@ -86,23 +110,17 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 5200) {
 
 /**
  * ✅ IMPORTANTE:
- * Siempre pegamos al PROXY del frontend:
- * - POST /ai/move
- * - POST /ai/log-moves
- * - GET  /ai/log-stats
- *
- * Eso evita mixed-content (https -> http) y funciona en LAN (https://192.168.x.x:5173).
+ * SIEMPRE usar el PROXY del frontend
+ * ❌ NO usar http://127.0.0.1:8010 directamente
  */
 function apiUrl(path) {
-  // path ejemplo: "/move", "/log-moves", "/log-stats"
   return `/ai${path}`;
 }
 
 export async function pedirJugadaIA(fen, sideToMove, boardSnapshot) {
   const side = normalizeSide(sideToMove);
-
   const board10 = cleanBoard10x10(boardSnapshot);
-  const fenCanon = board10 ? canonBoardJson(board10) : (typeof fen === "string" ? fen : null);
+  const fenCanon = board10 ? canonBoardJson(board10) : null;
 
   const payload = {
     side,
@@ -111,16 +129,15 @@ export async function pedirJugadaIA(fen, sideToMove, boardSnapshot) {
     fen: fenCanon,
   };
 
-  dbg("[IA.API] POST", apiUrl("/move"), "payload:", payload);
+  dbg("[IA.API] POST", apiUrl("/move"), payload);
 
-  const { resp, data, error } = await fetchJsonWithTimeout(
+  const { resp, data, bodyText, error } = await fetchJsonWithTimeout(
     apiUrl("/move"),
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-    },
-    5200
+    }
   );
 
   if (!resp) {
@@ -128,7 +145,7 @@ export async function pedirJugadaIA(fen, sideToMove, boardSnapshot) {
       ok: false,
       move: "",
       reason: isAbortError(error) ? "timeout_abort" : "network_error",
-      meta: { url: apiUrl("/move"), error: String(error?.message || error) },
+      meta: { error: String(error) }
     };
   }
 
@@ -137,7 +154,7 @@ export async function pedirJugadaIA(fen, sideToMove, boardSnapshot) {
       ok: false,
       move: "",
       reason: `http_${resp.status}`,
-      meta: { url: apiUrl("/move"), detail: data?.detail ?? null, raw: data ?? null },
+      meta: { bodyText, raw: data }
     };
   }
 
@@ -147,26 +164,108 @@ export async function pedirJugadaIA(fen, sideToMove, boardSnapshot) {
 export async function enviarLogIA(entries) {
   const list = Array.isArray(entries) ? entries : [entries];
 
-  dbg("[IA.API] POST", apiUrl("/log-moves"), "entries:", list);
-
-  const { resp, data, error } = await fetchJsonWithTimeout(
+  const { resp, data, bodyText } = await fetchJsonWithTimeout(
     apiUrl("/log-moves"),
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(list),
-    },
-    5200
+    }
   );
 
-  if (!resp) return { ok: false, error: String(error?.message || error), url: apiUrl("/log-moves") };
-  if (!resp.ok) return { ok: false, status: resp.status, detail: data?.detail ?? null, raw: data ?? null, url: apiUrl("/log-moves") };
+  if (!resp || !resp.ok) {
+    return { ok: false, bodyText, raw: data };
+  }
+
   return data;
 }
 
 export async function getIAStats() {
-  const { resp, data, error } = await fetchJsonWithTimeout(apiUrl("/log-stats"), { method: "GET" }, 5200);
-  if (!resp) return { ok: false, error: String(error?.message || error), url: apiUrl("/log-stats") };
-  if (!resp.ok) return { ok: false, status: resp.status, raw: data ?? null, url: apiUrl("/log-stats") };
+  const { resp, data, bodyText } = await fetchJsonWithTimeout(
+    apiUrl("/log-stats"),
+    { method: "GET" }
+  );
+
+  if (!resp || !resp.ok) {
+    return { ok: false, bodyText, raw: data };
+  }
+
+  return data;
+}
+
+/**
+ * ✅ ENSEÑAR IA (POST /ai/teach)
+ * - Usa el proxy /ai/*
+ * - Timeout + lectura robusta de error (json/text)
+ * - No lanza excepción: devuelve ok:false para fallback y debug
+ *
+ * payload backend:
+ *  { board: 10x10, side: "R"/"N", correct_move: "c3-d4", note?: "" }
+ */
+export async function enseñarIA({ board, side, correct_move, note = "" }) {
+  const sideNorm = normalizeSide(side);
+  const board10 = cleanBoard10x10(board);
+  const payload = {
+    side: sideNorm,
+    side_to_move: sideNorm,   // compat, por si lo quieres usar en backend
+    board: board10,
+    fen: board10 ? canonBoardJson(board10) : null, // compat/debug
+    correct_move: String(correct_move || "").trim(),
+    note: String(note || "").slice(0, 240),
+    ts: Date.now(),
+  };
+
+  dbg("[IA.API] POST", apiUrl("/teach"), payload);
+
+  // Validación suave (frontend) para no mandar basura
+  if (!payload.board || payload.board.length !== 10) {
+    return {
+      ok: false,
+      reason: "invalid_board_client",
+      meta: { detail: "boardSnapshot no es 10x10 o contiene valores inválidos." }
+    };
+  }
+  if (!payload.correct_move) {
+    return {
+      ok: false,
+      reason: "missing_correct_move_client",
+      meta: { detail: "Falta correct_move (ej: 'c3-d4')." }
+    };
+  }
+
+  const { resp, data, bodyText, error } = await fetchJsonWithTimeout(
+    apiUrl("/teach"),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+
+  if (!resp) {
+    return {
+      ok: false,
+      reason: isAbortError(error) ? "timeout_abort" : "network_error",
+      meta: { error: String(error) }
+    };
+  }
+
+  if (!resp.ok) {
+    return {
+      ok: false,
+      reason: `http_${resp.status}`,
+      meta: { bodyText, raw: data }
+    };
+  }
+
+  // Si backend devolvió ok:false (aunque HTTP 200)
+  if (data && data.ok === false) {
+    return {
+      ok: false,
+      reason: data.reason || "teach_failed",
+      meta: { raw: data, bodyText }
+    };
+  }
+
   return data;
 }

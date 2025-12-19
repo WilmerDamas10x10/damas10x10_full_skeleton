@@ -7,17 +7,22 @@ from typing import Optional, List, Any, Dict
 from uuid import uuid4
 from pathlib import Path
 import json
-import re
 import time
 import os
 import inspect
+import traceback
 
 import smtplib
 from email.mime.text import MIMEText
 
-# Motor fuerte (minimax u otro) definido en ai_engine.py
-from ai_engine import choose_best_move
+# Motor IA (minimax + experiencia)
+from ai_engine import (
+    choose_best_move,
+    board_to_key,
+    get_learned_move_by_key,
+)
 
+from routes.patterns import router as patterns_router
 
 # =========================
 # CONFIG DEBUG
@@ -43,6 +48,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(patterns_router)
+
 
 # -------------------------------------------------------------------
 # "Base de datos" simple: archivo JSON
@@ -54,7 +61,52 @@ USERS_FILE = Path("users.json")
 # -------------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 AI_MOVES_LOG = DATA_DIR / "ai_moves.jsonl"
+
+# -------------------------------------------------------------------
+# ✅ TEACH: overrides persistentes (enseñar a la IA)
+# -------------------------------------------------------------------
+AI_TEACH_OVERRIDES = DATA_DIR / "ai_teach_overrides.json"
+AI_TEACH_LOG = DATA_DIR / "ai_teach_log.jsonl"
+
+def _load_json_file(path: Path, default):
+    try:
+        if not path.exists():
+            return default
+        text = path.read_text(encoding="utf-8").strip()
+        if not text:
+            return default
+        return json.loads(text)
+    except Exception:
+        return default
+
+def _atomic_save_json(path: Path, obj: Any) -> None:
+    """
+    Guardado atómico para evitar archivos corruptos si se corta el proceso.
+    """
+    try:
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        # fallback best-effort
+        path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+
+# Estructura:
+# OVERRIDES_BY_K = { "<k>": { "move": "c3-d4", "ts": 123, "count": 2, "note": "" } }
+OVERRIDES_BY_K: Dict[str, Dict[str, Any]] = _load_json_file(AI_TEACH_OVERRIDES, default={})
+
+def _teach_log_append(row: Dict[str, Any]) -> None:
+    try:
+        row["ts"] = int(row.get("ts") or time.time() * 1000)
+        AI_TEACH_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with AI_TEACH_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
 
 # -------------------------------------------------------------------
 # Configuración de correo (SMTP) - (si no lo usas, no afecta)
@@ -139,7 +191,7 @@ class AIMoveRequest(BaseModel):
     Petición de jugada IA.
 
     Compatible:
-    - {fen: ..., side: "R"/"N"}
+    - {fen: ..., side: "R"/"N"}     (legacy)
     - {board: ..., side_to_move: "R"/"N"}
     """
     fen: Optional[Any] = None
@@ -170,6 +222,68 @@ class AIMoveResponse(BaseModel):
     move: str
     reason: Optional[str] = None
     meta: Optional[Dict[str, Any]] = None
+
+
+# ==========================
+# ✅ DEBUG KEY: Schema + Endpoint Swagger
+# ==========================
+class AIDebugKeyRequest(BaseModel):
+    board: List[List[Optional[str]]]  # 10x10 con 'r','n','R','N' o None
+    side: str                         # "R" o "N"
+
+
+# -------------------------------------------------------------------
+# ✅ TEACH: request/response (enseñar jugada correcta)
+# -------------------------------------------------------------------
+class AITeachRequest(BaseModel):
+    """
+    Enseñar una jugada correcta para una posición específica.
+    Compatible con:
+      - {fen: board10x10, side: "R"/"N", correct_move: "c3-d4"}
+      - {board: board10x10, side_to_move: ..., correctMove: ...} etc.
+    """
+    fen: Optional[Any] = None
+    board: Optional[Any] = None
+    side: Optional[str] = None
+    side_to_move: Optional[str] = None
+
+    correct_move: Optional[str] = None
+    correctMove: Optional[str] = None  # alias por si llega así
+
+    note: Optional[str] = None
+    ts: Optional[int] = None
+
+    @root_validator(pre=True)
+    def _normalize(cls, values):
+        if not isinstance(values, dict):
+            return values
+
+        # board/fen compat
+        if "fen" not in values and "board" in values:
+            values["fen"] = values.get("board")
+
+        # side alias
+        if "side" not in values:
+            for k in ("side_to_move", "sideToMove", "turn", "color", "lado"):
+                if k in values:
+                    values["side"] = values.get(k)
+                    break
+
+        # correct_move alias
+        if "correct_move" not in values and "correctMove" in values:
+            values["correct_move"] = values.get("correctMove")
+
+        return values
+
+
+class AITeachResponse(BaseModel):
+    ok: bool = True
+    stored: bool = True
+    move: str
+    k: str
+    side: str
+    count: int
+    reason: Optional[str] = None
 
 
 # -------------------------------------------------------------------
@@ -216,7 +330,7 @@ def health():
 
 @app.get("/ai")
 def ai_root():
-    return {"ok": True, "hint": "Use POST /ai/move, POST /ai/train, POST /ai/log-moves"}
+    return {"ok": True, "hint": "Use POST /ai/move, POST /ai/train, POST /ai/log-moves, POST /ai/teach"}
 
 
 # -------------------------------------------------------------------
@@ -241,6 +355,17 @@ def _safe_stat_size(p: Path) -> int:
         return p.stat().st_size
     except Exception:
         return 0
+
+
+def _append_jsonl_line(path: Path, row: Dict[str, Any]) -> None:
+    """
+    ✅ Append seguro a JSONL:
+    - crea data/ si no existe
+    - escribe 1 línea JSON (UTF-8)
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 # -------------------------------------------------------------------
@@ -291,7 +416,8 @@ def _normalize_board_10x10(x: Any) -> Optional[List[List[Any]]]:
     return out
 
 
-def _canon_board_key(board_10: List[List[Any]]) -> str:
+def _canon_board_key_json(board_10: List[List[Any]]) -> str:
+    # Legacy: JSON compactado del board (lo mantenemos para compat)
     return json.dumps(board_10, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -304,38 +430,6 @@ def _normalize_side(side_raw: Any) -> str:
     return "R" if s.startswith("R") else "N"
 
 
-def _canon_key_any(x: Any) -> Optional[str]:
-    if x is None:
-        return None
-    if isinstance(x, list):
-        b = _normalize_board_10x10(x)
-        if b is None:
-            return None
-        return _canon_board_key(b)
-    if isinstance(x, str):
-        s = x.strip()
-        if s.startswith("[") and s.endswith("]"):
-            try:
-                tmp = json.loads(s)
-            except Exception:
-                return None
-            b = _normalize_board_10x10(tmp)
-            if b is None:
-                return None
-            return _canon_board_key(b)
-        return None
-    return None
-
-
-def _append_jsonl_line(path: Path, row: dict) -> None:
-    line = json.dumps(row, ensure_ascii=False)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8", newline="\n") as f:
-        f.write(line + "\n")
-        f.flush()
-        os.fsync(f.fileno())
-
-
 # -------------------------------------------------------------------
 # Stats de log
 # -------------------------------------------------------------------
@@ -345,13 +439,149 @@ def ai_log_stats():
         abs_path = AI_MOVES_LOG.resolve()
         exists = AI_MOVES_LOG.exists()
         size = _safe_stat_size(AI_MOVES_LOG) if exists else 0
-        return {"cwd": os.getcwd(), "file": str(AI_MOVES_LOG), "abs": str(abs_path), "exists": exists, "bytes": size}
+        return {
+            "cwd": os.getcwd(),
+            "file": str(AI_MOVES_LOG),
+            "abs": str(abs_path),
+            "exists": exists,
+            "bytes": size
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"log-stats error: {repr(e)}")
 
 
 # -------------------------------------------------------------------
-# Guardar logs
+# ✅ DEBUG: KEY CANÓNICA + lookup directo
+# -------------------------------------------------------------------
+@app.post("/ai/debug-key")
+def ai_debug_key(req: AIDebugKeyRequest) -> Any:
+    side = _normalize_side(req.side)
+
+    board_10 = _normalize_board_10x10(req.board)
+    if board_10 is None:
+        return JSONResponse(
+            status_code=200,
+            content={"ok": False, "error": "invalid_board", "detail": "Se esperaba board 10x10 (lista de listas)."},
+        )
+
+    try:
+        k = board_to_key(board_10, side)
+    except Exception as e:
+        return JSONResponse(
+            status_code=200,
+            content={"ok": False, "error": f"no se pudo generar key: {repr(e)}"},
+        )
+
+    learned = None
+    try:
+        learned = get_learned_move_by_key(k, max_lines=6000)
+    except Exception:
+        learned = None
+
+    teach = OVERRIDES_BY_K.get(k)
+
+    return {
+        "ok": True,
+        "side": side,
+        "k": k,
+        "learnedMove": learned,
+        "teachOverride": teach.get("move") if isinstance(teach, dict) else None,
+    }
+
+
+# -------------------------------------------------------------------
+# ✅ TEACH endpoint: /ai/teach
+# -------------------------------------------------------------------
+@app.post("/ai/teach", response_model=AITeachResponse)
+def ai_teach(req: AITeachRequest):
+    side = _normalize_side(req.side or req.side_to_move or "R")
+
+    board_raw = req.board if req.board is not None else req.fen
+    board_10 = _normalize_board_10x10(board_raw)
+    if board_10 is None:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": False,
+                "stored": False,
+                "move": "",
+                "k": "",
+                "side": side,
+                "count": 0,
+                "reason": "invalid_board",
+                "detail": "Board inválido: se esperaba lista 10x10 (o string JSON de lista 10x10).",
+            },
+        )
+
+    move = (req.correct_move or "").strip()
+    if not move:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": False,
+                "stored": False,
+                "move": "",
+                "k": "",
+                "side": side,
+                "count": 0,
+                "reason": "missing_correct_move",
+                "detail": "Falta correct_move (ej: 'c3-d4').",
+            },
+        )
+
+    try:
+        k = board_to_key(board_10, side)
+    except Exception as e:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": False,
+                "stored": False,
+                "move": "",
+                "k": "",
+                "side": side,
+                "count": 0,
+                "reason": f"key_error: {repr(e)}",
+            },
+        )
+
+    prev = OVERRIDES_BY_K.get(k) if isinstance(OVERRIDES_BY_K, dict) else None
+    prev_count = int(prev.get("count", 0)) if isinstance(prev, dict) else 0
+    count = prev_count + 1
+
+    OVERRIDES_BY_K[k] = {
+        "move": move,
+        "ts": int(req.ts or time.time() * 1000),
+        "count": count,
+        "note": (req.note or "").strip()[:240],
+    }
+    _atomic_save_json(AI_TEACH_OVERRIDES, OVERRIDES_BY_K)
+
+    _teach_log_append({
+        "t": "teach",
+        "k": k,
+        "side": side,
+        "move": move,
+        "note": req.note,
+        "count": count,
+        "ts": req.ts,
+    })
+
+    dprint(f"[AI.TEACH] stored override k(len={len(k)}) side={side} move={move} count={count}")
+
+    return AITeachResponse(
+        ok=True,
+        stored=True,
+        move=move,
+        k=k,
+        side=side,
+        count=count,
+        reason="stored_override",
+    )
+
+
+# -------------------------------------------------------------------
+# Guardar logs (guardamos 'k' REAL + legacy)
 # -------------------------------------------------------------------
 def _append_moves_to_jsonl(entries_raw: List[Any]) -> Dict[str, Any]:
     if not entries_raw:
@@ -401,8 +631,19 @@ def _append_moves_to_jsonl(entries_raw: List[Any]) -> Dict[str, Any]:
         except Exception:
             score = 0.0
 
-        key = _canon_board_key(board_10)
-        row = {"ts": ts, "fen": key, "key": key, "move": str(move).strip(), "score": score, "side": side}
+        k = board_to_key(board_10, side)
+        legacy_json = _canon_board_key_json(board_10)
+
+        row = {
+            "ts": ts,
+            "k": k,  # ✅ CLAVE OFICIAL PARA MATCH
+            "move": str(move).strip(),
+            "score": score,
+            "side": side,
+            "fen": legacy_json,  # compat
+            "key": legacy_json,  # compat
+        }
+
         _append_jsonl_line(AI_MOVES_LOG, row)
         saved += 1
 
@@ -416,6 +657,9 @@ def _append_moves_to_jsonl(entries_raw: List[Any]) -> Dict[str, Any]:
     }
 
 
+# -------------------------------------------------------------------
+# ✅ ENDPOINT ÚNICO /ai/log-moves + alias /ai/train
+# -------------------------------------------------------------------
 @app.post("/ai/log-moves")
 def ai_log_moves(payload: Any = Body(...)):
     try:
@@ -423,46 +667,35 @@ def ai_log_moves(payload: Any = Body(...)):
         return _append_moves_to_jsonl(entries_raw)
     except Exception as e:
         print("[AI-LOG] Error guardando logs:", repr(e))
-        raise HTTPException(status_code=500, detail="Error guardando logs de IA (ver consola backend)")
+        print(traceback.format_exc())
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "where": "/ai/log-moves", "error": repr(e)},
+        )
 
 
 @app.post("/ai/train")
 def ai_train(batch: Any = Body(...)):
+    """
+    Trainer del frontend te está pegando aquí.
+    Lo dejamos como alias de guardado de logs para que NO reviente.
+    """
     try:
         moves_raw = _normalize_log_payload(batch)
         return _append_moves_to_jsonl(moves_raw)
     except Exception as e:
         print("[AI-TRAIN] Error:", repr(e))
-        raise HTTPException(status_code=500, detail="Error en /ai/train (ver consola backend)")
+        print(traceback.format_exc())
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "where": "/ai/train", "error": repr(e)},
+        )
 
 
 # -------------------------------------------------------------------
-# Adaptador choose_best_move
-# -------------------------------------------------------------------
-def _choose_best_move_safe(board_obj: Any, side: str, level: int = 3):
-    try:
-        sig = inspect.signature(choose_best_move)
-        params = set(sig.parameters.keys())
-    except Exception:
-        params = set()
-
-    for name in ("side_to_move", "to_move", "turn", "color", "player", "side"):
-        if name in params:
-            try:
-                if "level" in params:
-                    return choose_best_move(board_obj, **{name: side}, level=level)
-                return choose_best_move(board_obj, **{name: side})
-            except TypeError:
-                break
-
-    try:
-        return choose_best_move(board_obj, side, level=level)
-    except TypeError:
-        return choose_best_move(board_obj, side)
-
-
-# -------------------------------------------------------------------
-# /ai/move — experiencia (match por key canon) + fallback
+# /ai/move — ✅ ahora usa:
+# 1) TEACH override inmediato
+# 2) choose_best_move con experiencia completa
 # -------------------------------------------------------------------
 @app.post("/ai/move", response_model=AIMoveResponse)
 def ai_move(req: AIMoveRequest):
@@ -474,7 +707,7 @@ def ai_move(req: AIMoveRequest):
 
     board_10 = _normalize_board_10x10(board_raw)
     if board_10 is None:
-        dprint("[AI.DEBUG] invalid_board: board inválido o no 10x10. Ejemplo head:", str(board_raw)[:180])
+        dprint("[AI.DEBUG] invalid_board: board inválido o no 10x10. head:", str(board_raw)[:180])
         return JSONResponse(
             status_code=200,
             content={
@@ -485,101 +718,67 @@ def ai_move(req: AIMoveRequest):
             },
         )
 
-    key = _canon_board_key(board_10)
-    dprint("[AI.DEBUG] key(len)=", len(key))
+    # key canónica (solo meta/debug)
+    k = board_to_key(board_10, side)
+    dprint("[AI.DEBUG] key(k) len=", len(k))
 
-    # 1) experiencia exacta por key + side
-    def normalize_move_to_algebra(move_val: Any) -> Optional[str]:
-        if move_val is None:
-            return None
-        if isinstance(move_val, str):
-            s2 = move_val.strip().lower()
-            if re.match(r"^[a-j]\d{1,2}(-[a-j]\d{1,2})+$", s2):
-                return s2
-        return None
-
-    def find_experience_move_exact(key_local: str, side_local: str, max_scan: int = 6000) -> Optional[Dict[str, Any]]:
-        try:
-            if not AI_MOVES_LOG.exists():
-                dprint("[AI.DEBUG] experience: log no existe:", AI_MOVES_LOG)
-                return None
-
-            lines = AI_MOVES_LOG.read_text(encoding="utf-8", errors="ignore").splitlines()
-            dprint(f"[AI.DEBUG] experience: total_lines={len(lines)} scan_last={min(max_scan, len(lines))}")
-
-            for line in reversed(lines[-max_scan:]):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except Exception:
-                    continue
-
-                # ✅ CANONIZAR row_key venga como string o lista
-                row_key = _canon_key_any(row.get("key")) or _canon_key_any(row.get("fen"))
-                if not row_key or row_key != key_local:
-                    continue
-
-                row_side = _normalize_side(row.get("side") or side_local)
-                if row_side != side_local:
-                    continue
-
-                mv = normalize_move_to_algebra(row.get("move"))
-                if mv:
-                    dprint("[AI.DEBUG] experience HIT ✅", mv)
-                    return {"move": mv, "row": row}
-
-            dprint("[AI.DEBUG] experience MISS ❌")
-            return None
-        except Exception as e:
-            dprint("[AI.DEBUG] experience ERROR:", repr(e))
-            return None
-
-    exp = find_experience_move_exact(key, side)
-    if exp:
-        return AIMoveResponse(
-            ok=True,
-            move=exp["move"],
-            reason="experiencia_exacta",
-            meta={"source": "ai_moves.jsonl", "ts": exp["row"].get("ts"), "side": side},
-        )
-
-    # 2) fallback minimax
+    # ✅ DEBUG EXTREMO: imprimir key completa y base_key
     try:
-        dprint("[AI.DEBUG] fallback minimax (sin experiencia)")
-        move_str = _choose_best_move_safe(board_10, side=side, level=3)
+        base_k = k.split("|side:")[0] if "|side:" in k else k
+    except Exception:
+        base_k = k
 
-        # Si no hay jugada con side actual, probamos el lado contrario
-        if not move_str or not isinstance(move_str, str) or not move_str.strip():
-            other = "N" if side == "R" else "R"
-            dprint(f"[AI.DEBUG] minimax no encontró jugada con side={side}. Reintentando con side={other}...")
-            move_str2 = _choose_best_move_safe(board_10, side=other, level=3)
+    dprint("[AI.DEBUG] k FULL =", k)
+    dprint("[AI.DEBUG] base_k =", base_k)
 
-            if move_str2 and isinstance(move_str2, str) and move_str2.strip():
+    # ---------------------------------------------------------
+    # ✅ 1) TEACH OVERRIDE (prioridad máxima)
+    # ---------------------------------------------------------
+    try:
+        override = OVERRIDES_BY_K.get(k) if isinstance(OVERRIDES_BY_K, dict) else None
+        if isinstance(override, dict):
+            om = str(override.get("move", "")).strip()
+            if om:
+                dprint(f"[AI.TEACH] override HIT -> {om}")
                 return AIMoveResponse(
                     ok=True,
-                    move=move_str2.strip(),
-                    reason="minimax_side_flip",
-                    meta={"side": other},
+                    move=om,
+                    reason="teach_override",
+                    meta={"side": side, "k": k, "base_k": base_k, "source": "teach_override"},
                 )
-
-            # ❗ Ninguno de los dos lados encontró jugada
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "ok": False,
-                    "move": "",
-                    "reason": "no_legal_move",
-                    "detail": "La IA no encontró jugada legal (board/turn/reglas).",
-                },
-            )
-
-        # ✅ Jugada encontrada con el lado original
-        return AIMoveResponse(ok=True, move=move_str.strip(), reason="minimax", meta={"side": side})
-
-    except HTTPException:
-        raise
     except Exception as e:
-        print("[AI] Error en minimax choose_best_move:", repr(e))
-        raise HTTPException(status_code=500, detail=f"Error IA: {e}")
+        dprint("[AI.TEACH] override check error:", repr(e))
+
+    # ---------------------------------------------------------
+    # ✅ 2) EXPERIENCIA + MINIMAX (tu flujo actual)
+    # ---------------------------------------------------------
+    try:
+        move_str = choose_best_move(
+            board_10,
+            side,
+            depth=4,
+            fen=None,
+            use_learned=True,         # ✅ activar experiencia
+            learned_max_lines=6000,
+        )
+    except Exception as e:
+        dprint("[AI.DEBUG] choose_best_move ERROR:", repr(e))
+        move_str = None
+
+    if not move_str or not isinstance(move_str, str) or not move_str.strip():
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": False,
+                "move": "",
+                "reason": "no_legal_move",
+                "detail": "La IA no encontró jugada legal (ni por experiencia ni por minimax).",
+            },
+        )
+
+    return AIMoveResponse(
+        ok=True,
+        move=move_str.strip(),
+        reason="choose_best_move",
+        meta={"side": side, "k": k, "base_k": base_k},
+    )

@@ -1,73 +1,47 @@
 // src/ui/pages/Training/editor/lib/ai.captureSession.js
-// FASE 1 — Grabación manual (Editor) + buffer + flush al backend
-// - NO graba si no estás en modo grabación
-// - Guarda en RAM y se envía al final (o cuando llames flush)
-// - ✅ También “duplica” en logMoves.js para que trainer.js tenga datos
-// - ✅ Incluye stopAndFlushAICapture() para auto-train al finalizar
-//
-// ✅ FIX CLAVE:
-// - Antes se ignoraba si entry.move no era string.
-// - Ahora acepta move como:
-//   - string "e3-f4" / "c3-e5-g7"
-//   - objeto {from:[r,c], to:[r,c]}
-//   - objeto {path:[[r,c],...]} o {route:[[r,c],...]}
+// Captura manual de jugadas (Editor/Training) -> logMoves (localStorage) -> flush al backend (/ai/log-moves)
 
-import { recordMove } from "../../../../../ai/learning/logMoves.js";
-import { trainModel } from "../../../../../ai/learning/trainer.js";
+import { recordMove, getRecentMoves, clearMoves } from "../../../../../ai/learning/logMoves.js";
+
+const TAG = "[AI-CAPTURE]";
+const DEFAULT_API_BASE = "http://127.0.0.1:8001";
 
 let recording = false;
 let sessionId = null;
-let buffer = [];
+let buffered = 0;
 
-function safeId() {
-  return `sess_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+function nowTs() { return Date.now(); }
+
+function normalizeSide(side) {
+  const s = String(side ?? "").toUpperCase();
+  if (s.includes("ROJO") || s === "R" || s === "RED" || s === "WHITE" || s === "W") return "R";
+  if (s.includes("NEGRO") || s === "N" || s === "BLACK" || s === "B") return "N";
+  return s || "R";
 }
 
-function normalizeFen(v) {
-  // En el Editor a veces fen viene como board (array/objeto), así que lo convertimos.
-  if (v == null) return null;
-  if (typeof v === "string") return v;
-  try { return JSON.stringify(v); } catch {}
-  try { return String(v); } catch {}
-  return null;
+function resolveApiBase() {
+  // 1) env (Vite)
+  try {
+    const v = import.meta?.env?.VITE_IA_API_BASE;
+    if (v) return String(v);
+  } catch {}
+
+  // 2) window override
+  try {
+    if (typeof window !== "undefined" && window.__AI_API_BASE) return String(window.__IA_API_BASE);
+  } catch {}
+
+  // 3) localStorage override
+  try {
+    const v = localStorage.getItem("d10.ai.apiBase");
+    if (v) return String(v);
+  } catch {}
+
+  return DEFAULT_API_BASE;
 }
 
-function hasCoordsPair(x) {
-  return Array.isArray(x) && x.length === 2 && Number.isFinite(+x[0]) && Number.isFinite(+x[1]);
-}
-
-function looksLikeRealMove(mv) {
-  if (mv == null) return false;
-
-  if (typeof mv === "string") {
-    return mv.trim().length > 0;
-  }
-
-  if (typeof mv === "object") {
-    // path/route multi-captura
-    if (Array.isArray(mv.path) && mv.path.length >= 2 && mv.path.every(hasCoordsPair)) return true;
-    if (Array.isArray(mv.route) && mv.route.length >= 2 && mv.route.every(hasCoordsPair)) return true;
-
-    // from/to simple
-    if (hasCoordsPair(mv.from) && hasCoordsPair(mv.to)) return true;
-  }
-
-  return false;
-}
-
-export function startAICapture() {
-  recording = true;
-  sessionId = safeId();
-  buffer = [];
-  console.log("[AI-CAPTURE] startAICapture()", { sessionId });
-  return { ok: true, sessionId };
-}
-
-export function stopAICapture() {
-  recording = false;
-  const info = { ok: true, sessionId, entries: buffer.length };
-  console.log("[AI-CAPTURE] stopAICapture()", info);
-  return info;
+function _safeJson(x) {
+  try { return JSON.stringify(x); } catch { return String(x ?? ""); }
 }
 
 export function isAICapturing() {
@@ -75,145 +49,131 @@ export function isAICapturing() {
 }
 
 export function getAICaptureInfo() {
-  return { recording, sessionId, buffered: buffer.length };
+  return { recording, sessionId, buffered };
 }
 
-export function recordAIMove(entry = {}) {
-  if (!recording) return false;
+export function startAICapture(meta = {}) {
+  recording = true;
+  sessionId = `sess_${nowTs()}`;
+  buffered = 0;
+  console.log(TAG, "startAICapture()", { sessionId, meta });
+  return getAICaptureInfo();
+}
 
-  const fenNorm = normalizeFen(entry.fen);
+export function stopAICapture(meta = {}) {
+  recording = false;
+  console.log(TAG, "stopAICapture()", { sessionId, buffered, meta });
+  return getAICaptureInfo();
+}
 
-  // ✅ Aceptar move string u objeto (from/to, path/route)
-  const mv = entry.move ?? entry;
+export function recordAIMove({ fen, side, move, score = 0, tag = "editor", meta = {} } = {}) {
+  // OJO: este log es útil para ver si te llega move real
+  console.log(TAG, "recordAIMove()", { hasFen: !!fen, side, move, tag });
 
-  if (!looksLikeRealMove(mv)) {
-    // Esto normalmente ocurre en clicks/selección/preview. No es jugada real.
-    console.log("[AI-CAPTURE] Ignorado: jugada sin move real", {
-      keys: Object.keys(entry || {}),
-      moveType: typeof entry?.move,
-      hasFromTo: !!(entry?.from && entry?.to),
-      hasPath: !!entry?.path,
-      hasRoute: !!entry?.route,
-    });
-    return false;
+  if (!recording) return { ok: false, reason: "not_recording" };
+
+  const moveStr = String(move ?? "").trim();
+  if (!moveStr) {
+    console.log(TAG, "Ignorado: jugada sin move real", { move });
+    return { ok: false, reason: "no_move" };
   }
+
+  // ✅ FILTRO 1: NO aceptar jugadas “objeto JSON” (las que salen sin c6-d7)
+  if (moveStr.startsWith("{") || moveStr.startsWith("[")) {
+    console.log(TAG, "Bloqueado: move en formato objeto (no algebraico)", moveStr.slice(0, 80));
+    return { ok: false, reason: "blocked_object_move" };
+  }
+
+  // ✅ FILTRO 2: NO aceptar jugadas con origen python/js (aunque vengan escapadas)
+  const ms = moveStr.toLowerCase();
+  if (ms.includes('"origin":"python"') || ms.includes('\\"origin\\":\\"python\\"') ||
+      ms.includes('"origin":"js"')     || ms.includes('\\"origin\\":\\"js\\"')) {
+    console.log(TAG, "Bloqueado: origen no-humano detectado en move", moveStr.slice(0, 120));
+    return { ok: false, reason: "blocked_non_human_origin" };
+  }
+
+  // fen puede venir como array/obj -> lo guardamos como string estable
+  let fenOut = fen;
+  if (typeof fenOut !== "string") fenOut = _safeJson(fenOut);
 
   const row = {
-    ts: Date.now(),
+    ts: nowTs(),
     sessionId,
-    fen: fenNorm ?? null,
-    side: entry.side ?? null,
-    move: mv ?? null,                // ✅ puede ser string u objeto
-    score: typeof entry.score === "number" ? entry.score : 0,
-    tag: entry.tag ?? "editor",
-    meta: entry.meta ?? null,
+    fen: fenOut,
+    side: normalizeSide(side),
+    move: moveStr,
+    score: Number(score) || 0,
+    tag: String(tag || "editor"),
+    meta: meta && typeof meta === "object" ? meta : {},
   };
 
-  buffer.push(row);
-
-  // ✅ IMPORTANTÍSIMO: también lo metemos en logMoves.js (trainer.js lee desde ahí)
   try {
-    recordMove({
-      ts: row.ts,
-      fen: row.fen,
-      move: row.move, // ✅ objeto permitido (logMoves lo stringify si hace falta)
-      score: row.score,
-      side: row.side,
-      tag: row.tag,
-      sessionId: row.sessionId,
-      meta: row.meta,
-    });
+    const ok = recordMove(row); // ✅ export REAL
+    if (!ok) return { ok: false, reason: "rejected_by_normalizer" };
+    buffered += 1;
+    return { ok: true, buffered };
   } catch (e) {
-    console.warn("[AI-CAPTURE] recordMove() falló:", e);
+    return { ok: false, reason: "record_failed", error: String(e?.message || e) };
   }
-
-  if (buffer.length <= 3 || buffer.length % 10 === 0) {
-    console.log("[AI-CAPTURE] recordAIMove()", {
-      buffered: buffer.length,
-      sample: {
-        fen: row.fen?.slice?.(0, 32) ?? row.fen,
-        move: typeof row.move === "string" ? row.move : "(obj)",
-        side: row.side
-      },
-    });
-  }
-
-  return true;
 }
 
-function _guessBase() {
-  return (window.__AI_API_BASE || "").trim();
-}
-
-export async function flushAICapture({ endpoint = "/ai/log-moves" } = {}) {
-  const payload = buffer.slice();
-  buffer = [];
-
-  console.log("[AI-CAPTURE] flushAICapture()", {
-    endpoint,
-    base: _guessBase() || "(same-origin)",
-    sending: payload.length,
-    preview0: payload[0]
-      ? {
-          fen: (payload[0].fen || "").slice(0, 40),
-          move: typeof payload[0].move === "string" ? payload[0].move : "(obj)",
-          side: payload[0].side
-        }
-      : null,
+async function _postJson(url, body) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
 
-  if (!payload.length) return { ok: true, sent: 0, empty: true };
+  const text = await res.text().catch(() => "");
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch {}
 
-  const base = _guessBase();
-  const url = base ? `${base}${endpoint}` : endpoint;
+  return {
+    ok: res.ok,
+    status: res.status,
+    url,
+    responseText: text?.slice?.(0, 300) || "",
+    responseJson: json,
+  };
+}
+
+export async function flushAICapture({ limit = 400, apiBase, clearOnOk = true } = {}) {
+  const base = String(apiBase || resolveApiBase()).replace(/\/$/, "");
+  const url = `${base}/ai/log-moves`;
+
+  const moves = getRecentMoves(limit);
+  console.log(TAG, "flushAICapture() -> POST", { url, count: moves.length });
+
+  if (!moves.length) {
+    return { ok: true, status: "empty", sent: 0 };
+  }
 
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    // Intento 1: formato recomendado {moves:[...]}
+    let resp = await _postJson(url, { moves });
 
-    let text = "";
-    try { text = await res.text(); } catch {}
+    // Intento 2 (compat): si backend legacy esperaba array directo
+    if (!resp.ok && (resp.status === 400 || resp.status === 422)) {
+      const resp2 = await _postJson(url, moves);
+      if (resp2.ok) resp = resp2;
+    }
 
-    let json = null;
-    try { json = text ? JSON.parse(text) : null; } catch {}
+    console.log(TAG, "flush response", resp);
 
-    const info = {
-      ok: res.ok,
-      sent: payload.length,
-      status: res.status,
-      url,
-      responseText: text?.slice?.(0, 250) || "",
-      responseJson: json,
-    };
+    if (resp.ok && clearOnOk) {
+      try { clearMoves(); } catch {}
+      buffered = 0;
+    }
 
-    console.log("[AI-CAPTURE] flush response", info);
-    return info;
+    return { ...resp, sent: moves.length };
   } catch (e) {
-    buffer = payload.concat(buffer);
-    const err = { ok: false, sent: 0, error: String(e?.message || e) };
-    console.warn("[AI-CAPTURE] flush error", err);
-    return err;
+    const err = String(e?.message || e);
+    console.warn(TAG, "flushAICapture() fallo de red:", err, { url });
+    return { ok: false, status: "network_error", error: err, url, sent: moves.length };
   }
 }
 
-/**
- * ✅ Nuevo: Finalizar + Flush + Auto-train
- */
-export async function stopAndFlushAICapture({ endpoint = "/ai/log-moves", autoTrain = true } = {}) {
-  const stopped = stopAICapture();
-  const flushed = await flushAICapture({ endpoint });
-
-  if (autoTrain) {
-    try {
-      console.log("[learning] auto-train after stop+flush");
-      await trainModel();
-    } catch (e) {
-      console.warn("[learning] auto-train error:", e);
-    }
-  }
-
-  return { stopped, flushed };
+export async function stopAndFlushAICapture(opts = {}) {
+  stopAICapture({ via: "stopAndFlush" });
+  return flushAICapture(opts);
 }

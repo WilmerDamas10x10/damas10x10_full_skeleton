@@ -98,3 +98,46 @@
 .ghost-layer .piece.glow-selected.piece--bk::after {
   box-shadow: 0 0 0 var(--ring-outside) var(--ring-color-default);
 }
+/* ================================
+   IA – Layout con botones laterales
+   ================================ */
+
+.ai-layout {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+/* Centro (tablero) */
+.ai-center {
+  display: flex;
+  justify-content: center;
+}
+
+/* Laterales */
+.ai-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 160px;
+}
+
+/* Botones alineados y compactos */
+.ai-side .btn,
+.ai-side select {
+  width: 100%;
+}
+
+/* Responsive: en pantallas pequeñas vuelven abajo */
+@media (max-width: 900px) {
+  .ai-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-side {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+}

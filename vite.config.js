@@ -31,42 +31,26 @@ function getHttpsConfig() {
 export default defineConfig({
   resolve: {
     alias: {
-      // Rutas existentes
       "@router": path.resolve(__dirname, "src/router.js"),
       "@wan": path.resolve(__dirname, "src/net/index.js"),
-
-      // 🔽 Motor único expuesto solo aquí
       "@engine": path.resolve(__dirname, "src/shared/engineBridge.js"),
-
-      // 🔽 Barril “puro” de reglas (SIN pasar por engineBridge)
       "@rules": path.resolve(__dirname, "src/rules/index.js"),
-      // (eliminado) '@rulesParallel': path.resolve(__dirname, 'src/rules_parallel/index.js'),
     },
   },
 
-  // ============================================================
-  // 🔧 Servidor local — HTTPS opcional + LAN + Cloudflare
-  // ============================================================
   server: {
-    https: getHttpsConfig(), // ← solo en dev y si existen los .pem
+    https: getHttpsConfig(),
 
-    // 🌐 Permite acceso desde celular/tablet/otros dispositivos
     host: true,
-
-    // 📌 Puerto fijo
     port: 5173,
     strictPort: true,
 
-    // 🔓 Permitir dominios externos como trycloudflare.com
     allowedHosts: true,
-    // allowedHosts: ['pools-overnight-conditions-division.trycloudflare.com'],
 
-    // ============================================================
-    // ✅ PROXY: /ai/* se redirige al backend FastAPI (evita 404 en 5173)
-    // ============================================================
+    // ✅ PROXY: /ai/* se redirige al backend FastAPI
     proxy: {
       "/ai": {
-        target: "http://127.0.0.1:8001", // <-- cambia si tu FastAPI usa otro puerto
+        target: "http://127.0.0.1:8001", // ✅ PUERTO REAL (según tu consola uvicorn)
         changeOrigin: true,
         secure: false,
       },

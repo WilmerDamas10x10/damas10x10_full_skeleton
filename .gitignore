@@ -1,21 +1,55 @@
+# =========================
+# Node / Vite
+# =========================
 node_modules/
 dist/
 .vite/
+
+# =========================
+# Firebase / VSCode
+# =========================
 .firebase/
 .vscode/
+
+# =========================
+# Logs y sistema
+# =========================
 *.log
-.env
 .DS_Store
 Thumbs.db
 desktop.ini
-# Certificados locales mkcert (NO subir a GitHub)
+
+# =========================
+# Variables de entorno
+# =========================
+.env
+.env.*
+
+# =========================
+# Certificados locales mkcert (NO subir)
+# =========================
 localhost+2.pem
 localhost+2-key.pem
 
+# =========================
 # Archivos de comandos sueltos
+# =========================
 netstat
 taskkill
 
+# =========================
 # Zips locales de trabajo
-src/ui/pages/Online.zip
+# =========================
 *.zip
+src/ui/pages/Online.zip
+
+# =========================
+# Python (NO subir cache)
+# =========================
+__pycache__/
+*.pyc
+
+# =========================
+# IA – datos locales de aprendizaje (NO subir)
+# =========================
+backend-python/data/ai_moves.jsonl

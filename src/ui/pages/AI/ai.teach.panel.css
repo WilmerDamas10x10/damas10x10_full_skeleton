@@ -1,0 +1,65 @@
+.ai-teach-panel{
+  width: 100%;
+  padding: 10px 10px;
+  border: 1px solid rgba(0,0,0,.12);
+  border-radius: 12px;
+  background: rgba(255,255,255,.65);
+  backdrop-filter: blur(6px);
+}
+
+.ai-teach-row{
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.ai-teach-side{
+  font-weight: 700;
+  font-size: .95rem;
+  white-space: nowrap;
+}
+
+.ai-teach-input{
+  width: 100%;
+  padding: .55rem .65rem;
+  border-radius: 10px;
+  border: 1px solid rgba(0,0,0,.18);
+  background: rgba(255,255,255,.92);
+  font-size: 1rem;
+}
+
+.ai-teach-input:disabled{
+  opacity: .6;
+}
+
+.ai-teach-btn{
+  appearance: none;
+  border: 1px solid rgba(0,0,0,.2);
+  border-radius: 10px;
+  padding: .52rem .65rem;
+  font-weight: 700;
+  cursor: pointer;
+  background: rgba(255,255,255,.9);
+}
+
+.ai-teach-btn:disabled{
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.ai-teach-status{
+  font-size: .9rem;
+  min-height: 1.1em;
+  opacity: .9;
+  white-space: nowrap;
+}
+
+@media (max-width: 520px){
+  .ai-teach-row{
+    grid-template-columns: 1fr;
+  }
+  .ai-teach-status{
+    min-height: 0;
+  }
+}

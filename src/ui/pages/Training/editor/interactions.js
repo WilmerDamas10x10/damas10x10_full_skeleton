@@ -3,7 +3,11 @@ import { createInteractionsController } from "./interactions.controller.js";
 import { onMove, onCaptureHop, onCrown, onInvalid } from "../../../sfx.hooks.js";
 
 // ✅ IA capture (Editor -> experiencia)
-import { recordAIMove, isAICapturing } from "./lib/ai.captureSession.js";
+// OJO: ya NO grabamos con recordAIMove aquí; solo usamos el flag isAICapturing()
+import { isAICapturing } from "./lib/ai.captureSession.js";
+
+// ✅ Grabación limpia HUMANA (FEN único + move algebraico)
+import { recordHumanFinalMove } from "../../../../ai/learning/logMoves.js";
 
 // ✅ DEBUG: confirma que ESTE archivo se está cargando
 console.log("[INTERACTIONS] Training/editor/interactions.js cargado ✅ (v-diff-board)");
@@ -37,7 +41,7 @@ export function attachBoardInteractions(container, ctx) {
   const fireInvalid = () => fireOnce("invalid", onInvalid);
 
   // ————————————————————————————————————————————————
-  // HELPERS IA — conversión a algebra 10×10
+  // HELPERS — conversión a algebra 10×10
   // ————————————————————————————————————————————————
   const FILES_10 = "abcdefghij";
 
@@ -46,7 +50,7 @@ export function attachBoardInteractions(container, ctx) {
     const [r, c] = rc;
     if (r < 0 || r > 9 || c < 0 || c > 9) return null;
     const file = FILES_10[c];
-    const rank = 10 - r; // row 9 => 1, row 0 => 10
+    const rank = 10 - r; // row 9 => 1, row 0 => 10 (top->10, bottom->1)
     return `${file}${rank}`;
   }
 
@@ -60,13 +64,21 @@ export function attachBoardInteractions(container, ctx) {
   // ————————————————————————————————————————————————
   // Helpers para leer tablero / turno
   // ————————————————————————————————————————————————
-  function getSideForCapture() {
+  function getSideForCaptureRaw() {
     try {
       if (typeof ctx?.getTurn === "function") return ctx.getTurn();
       if (typeof ctx?.turn === "string") return ctx.turn;
       if (typeof container?.turn === "string") return container.turn;
     } catch {}
     return null;
+  }
+
+  function normalizeSide(sideRaw) {
+    const s = String(sideRaw ?? "R").trim().toUpperCase();
+    if (s === "R" || s === "ROJO" || s === "WHITE" || s === "W" || s === "BLANCO" || s === "BLANCAS") return "R";
+    if (s === "N" || s === "NEGRO" || s === "BLACK" || s === "B" || s === "NEGRAS") return "N";
+    // fallback: si empieza con R -> R, caso contrario N
+    return s.startsWith("R") ? "R" : "N";
   }
 
   function getBoardForCapture() {
@@ -103,58 +115,70 @@ export function attachBoardInteractions(container, ctx) {
         const a = ar[c];
         if (b === a) continue;
 
-        // casilla que se vacía -> from candidate
         if (b != null && a == null) froms.push([r, c]);
-
-        // casilla que se llena -> to candidate
         if (b == null && a != null) tos.push([r, c]);
 
-        // caso coronación / reemplazo: misma casilla cambia de 'r' a 'R'
-        // lo tratamos como "to" si antes estaba algo y después algo (pero no null)
+        // coronación / reemplazo
         if (b != null && a != null) {
           tos.push([r, c]);
         }
       }
     }
 
-    // Heurística: necesitamos al menos 1 from y 1 to
     if (froms.length < 1 || tos.length < 1) return null;
 
-    // Elegimos el último "to" por si hubo reemplazos (corona) o múltiples cambios
     const from = froms[0];
     const to = tos[tos.length - 1];
 
     return { from, to, froms, tos };
   }
 
-  function captureExperienceFromFromTo(from, to, kind = "move") {
+  // ✅ CLAVE: grabar experiencia HUMANA con tablero y lado ANTES del movimiento
+  function captureExperienceFromFromTo(from, to, kind = "move", beforeBoard, beforeSideRaw) {
+    // Respeta tu switch actual: solo grabar cuando el usuario activa la captura
     if (!isAICapturing()) return;
 
-    const moveAlg = moveFromToToAlg(from, to);
-    if (!moveAlg) {
-      console.log("[AI-CAPTURE DEBUG] no se pudo construir moveAlg desde from/to", { from, to });
+    // 🛑 FILTRO DEFENSIVO: si el contexto indica origen IA/Python, NO grabar
+    // (esto evita las líneas extra tipo origin:"python")
+    const ctxMode = String(ctx?.mode ?? "").toLowerCase();
+    const ctxOrigin = String(ctx?.origin ?? "").toLowerCase();
+    if (ctxMode === "ai" || ctxOrigin === "python" || ctxOrigin === "backend") {
+      console.log("[CAPTURE] skip (no-humano):", { ctxMode, ctxOrigin });
       return;
     }
 
-    const fen = getBoardForCapture();
-    const side = getSideForCapture();
+    const moveAlg = moveFromToToAlg(from, to);
+    if (!moveAlg) {
+      console.log("[CAPTURE DEBUG] no se pudo construir moveAlg desde from/to", { from, to });
+      return;
+    }
 
-    console.log("[AI-CAPTURE DEBUG] moveAlg (diff):", moveAlg, "side:", side);
+    const fen = beforeBoard;                   // ✅ BEFORE board
+    const side = normalizeSide(beforeSideRaw); // ✅ BEFORE side, normalizado
+
+    console.log("[CAPTURE DEBUG] moveAlg (diff):", moveAlg, "side(before):", side);
 
     try {
-      recordAIMove({
+      const res = recordHumanFinalMove({
         fen,
         side,
         move: moveAlg,
-        tag: "editor_move",
+        sessionId: "training",
         meta: {
           source: "Training/editor/interactions.js",
           kind,
           via: "board-diff",
+          timing: "before-move",
+          origin: "human_click", // ✅ marcamos explícito: HUMANO
         },
       });
+
+      // log suave por si fue duplicado o formato inválido
+      if (!res?.ok) {
+        console.log("[CAPTURE] skip:", res);
+      }
     } catch (e) {
-      console.warn("[AI-CAPTURE] recordAIMove falló:", e);
+      console.warn("[CAPTURE] recordHumanFinalMove falló:", e);
     }
   }
 
@@ -177,12 +201,15 @@ export function attachBoardInteractions(container, ctx) {
   container.addEventListener?.("move:invalid", onInvalidEvent);
 
   // ————————————————————————————————————————————————
-  // ✅ WRAP onClick: aquí hacemos board-diff
+  // ✅ WRAP onClick: aquí hacemos board-diff + CAPTURA BEFORE-MOVE
   // ————————————————————————————————————————————————
   const originalOnClick = ctrl.onClick?.bind(ctrl);
 
   async function onClickWrapped(ev) {
-    const before = cloneBoard10(getBoardForCapture());
+    // ✅ snapshots BEFORE
+    const beforeBoard = cloneBoard10(getBoardForCapture());
+    const beforeSideRaw = getSideForCaptureRaw();
+
     let result;
 
     try {
@@ -193,40 +220,33 @@ export function attachBoardInteractions(container, ctx) {
       throw err;
     }
 
-    // Espera micro-tick para que el controller aplique el cambio al board
+    // Espera microtask para que el DOM/motor termine de aplicar
     await new Promise((r) => setTimeout(r, 0));
 
-    const after = cloneBoard10(getBoardForCapture());
+    const afterBoard = cloneBoard10(getBoardForCapture());
+    const diff = inferFromToByDiff(beforeBoard, afterBoard);
 
-    const diff = inferFromToByDiff(before, after);
+    if (!diff) return result;
 
-    if (!diff) {
-      // Si no hubo cambio, probablemente fue click inválido o selección
-      // (Esto también explica por qué el controller devuelve undefined)
-      // No grabamos.
-      // debug suave:
-      // console.log("[DIFF] sin movimiento detectado");
-      return result;
-    }
-
-    // Dispara sfx básicos (no sabemos si fue captura, pero al menos hubo movimiento)
     fireMove();
 
-    // Si hubo más cambios de los normales, asumimos captura (heurística)
     const manyChanges = (diff.froms?.length || 0) + (diff.tos?.length || 0) >= 3;
     if (manyChanges) fireCapture();
 
-    // ✅ Graba experiencia con from-to (ya no será null)
-    captureExperienceFromFromTo(diff.from, diff.to, manyChanges ? "captureHop" : "move");
+    // ✅ EXPERIENCIA con BEFORE board/side (solo si captura activada)
+    captureExperienceFromFromTo(
+      diff.from,
+      diff.to,
+      manyChanges ? "captureHop" : "move",
+      beforeBoard,
+      beforeSideRaw
+    );
 
     return result;
   }
 
   boardEl.addEventListener("click", onClickWrapped);
 
-  // ————————————————————————————————————————————————
-  // CLEANUP
-  // ————————————————————————————————————————————————
   return function detachBoardInteractions() {
     boardEl.removeEventListener("click", onClickWrapped);
 

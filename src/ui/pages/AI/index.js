@@ -1,6 +1,7 @@
 // ================================
 // src/ui/pages/AI/index.js
 // IA — Orquestador con Minimax (capturas + quiet + quiescence)
+// + Patrones (exacto + fuzzy) validados vs motor
 // ================================
 
 import {
@@ -9,10 +10,12 @@ import {
   makeController, attachBoardInteractions,
   COLOR, colorOf, movimientos as baseMovimientos, aplicarMovimiento as baseAplicarMovimiento,
 } from "@engine";
+
 import { onMove, onCaptureHop } from "../../sfx.hooks.js";
 import { mountLearningPanel } from "./ai.learning.panel.js";
 import { initEditorSFX } from "../Training/editor/sfx.bootstrap.js";
 import { ensureGlobalFX } from "../../kit/globalFX.js";
+
 import "../../../styles/board.css";
 import "../../../styles/board/cells.css";
 import "../Training/editor/editor.fx.css";
@@ -23,10 +26,196 @@ import { isGhost } from "@rules";
 
 import { minimaxChooseBestMove } from "../../../ai/minimax.js";
 import { evaluate } from "../../../ai/eval.js";
-import { pedirJugadaIA } from "../../api/ia.api.js";
+import { pedirJugadaIA, enviarLogIA } from "../../api/ia.api.js";
+
+import { mountTeachPanel } from "./ai.teach.panel.js";
+import "./ai.teach.panel.css";
+import "./ai.layout.css";
+
 import("/src/ai/learning/trainer.js").then(m => m.trainModel());
+
+import {
+  loadPatternIndex,
+  suggestMoveFromPatterns,
+  suggestMoveFromPatternsFuzzy,
+  enableServerPatternSync,
+  pullPatternIndexFromServer,
+} from "../../../ai/learning/patterns.js";
+
 const FX_CAPTURE_MS = 2000;
 const FX_MOVE_MS    = 220;
+
+console.log("[PATTERN INDEX]", loadPatternIndex());
+console.log("[PATTERN SUGGEST]", suggestMoveFromPatterns(startBoard, "R"));
+
+// ✅ PASO 8: al entrar a IA, trae la memoria del backend y la deja en localStorage
+(async () => {
+  // Si tienes proxy Vite / mismo dominio, NO cambies base.
+  enableServerPatternSync({ enabled: true, base: "/ai/patterns" });
+
+  const pull = await pullPatternIndexFromServer();
+  console.log("[PATTERN SYNC] pull", pull);
+
+  // Re-log después del pull para ver el índice ya cargado desde disco
+  console.log("[PATTERN INDEX AFTER PULL]", loadPatternIndex());
+})();
+
+
+
+async function bootstrapPatternSync() {
+  // ✅ PASO 8: memoria persistente en backend (no depende de caché/localStorage)
+  try {
+    enableServerPatternSync({ baseUrl: "" }); // vacío = mismo origen / proxy Vite
+  } catch {}
+
+  try {
+    const res = await pullPatternIndexFromServer({ merge: true });
+    console.log("[PATTERN SYNC] pull OK", res);
+  } catch (e) {
+    console.warn("[PATTERN SYNC] pull falló (se seguirá con local)", String(e?.message || e));
+  }
+}
+
+
+// ==============================================
+// ✅ PASO 3/6: Validar sugerencias de patrones vs motor (@engine)
+// ==============================================
+
+function _rcToAlg10x10(rc) {
+  if (!Array.isArray(rc) || rc.length < 2) return null;
+  const [r, c] = rc;
+  if (r == null || c == null) return null;
+  const file = String.fromCharCode(97 + c); // 0..9 => a..j
+  const rank = String(SIZE - r);            // r=0 => 10, r=9 => 1
+  return (file + rank).toLowerCase();
+}
+
+function _routeToAlg(path) {
+  if (!Array.isArray(path) || path.length < 2) return null;
+  const parts = [];
+  for (const rc of path) {
+    const a = _rcToAlg10x10(rc);
+    if (!a) return null;
+    parts.push(a);
+  }
+  return parts.join("-");
+}
+
+function _normalizeAlg(s) {
+  return String(s || "").trim().toLowerCase();
+}
+
+/**
+ * Construye el conjunto de jugadas legales (algebraicas) para un color:
+ * - simples: "a3-b4"
+ * - capturas: "a3-c5-e7"
+ *
+ * Basado 100% en baseMovimientos(board,[r,c]).
+ */
+function collectAllLegalAlgMoves(board, sideColor) {
+  const set = new Set();
+
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      const ch = board?.[r]?.[c] ?? null;
+      if (!ch) continue;
+
+      let chColor;
+      try { chColor = colorOf(ch); } catch { continue; }
+      if (chColor !== sideColor) continue;
+
+      const from = [r, c];
+      const fromAlg = _rcToAlg10x10(from);
+      if (!fromAlg) continue;
+
+      const mv = baseMovimientos(board, from) || {};
+
+      // Simples
+      const moves = mv.moves || mv.movs || mv.simple || [];
+      if (Array.isArray(moves) && moves.length) {
+        for (const m of moves) {
+          if (!m) continue;
+          const dest = m.to || m.dest || m.pos;
+          if (!Array.isArray(dest) || dest.length < 2) continue;
+          const toAlg = _rcToAlg10x10(dest);
+          if (!toAlg) continue;
+          set.add(`${fromAlg}-${toAlg}`);
+        }
+      }
+
+      // Capturas (rutas)
+      const caps = mv.captures || mv.capturas || mv.takes || [];
+      if (Array.isArray(caps) && caps.length) {
+        for (const rt of caps) {
+          const path = (rt && (rt.path || rt.ruta || rt.steps)) || null;
+          const alg = _routeToAlg(path);
+          if (alg) set.add(alg);
+        }
+      }
+    }
+  }
+
+  return set;
+}
+
+/**
+ * Intenta encontrar UNA sugerencia de patrones que sea legal según el motor.
+ * Retorna string "a3-b4-..." o null.
+ *
+ * Orden:
+ * 1) suggestMoveFromPatterns (exacto)
+ * 2) suggestMoveFromPatternsFuzzy (parecidos)
+ */
+function pickFirstLegalPatternSuggestion({ fen, side, legalSet }) {
+  // 1) Exacto
+  let s = suggestMoveFromPatterns(fen, side, { k: 5, minCount: 2, maxAgeDays: 180 });
+
+  // 2) Fuzzy (parecidos)
+  if (!s?.ok || !s.suggestions?.length) {
+    s = suggestMoveFromPatternsFuzzy(fen, side, {
+      k: 8,
+      minCount: 2,
+      maxAgeDays: 180,
+      preferRecent: true,
+
+      // radios por bucket (coincide con patterns.js)
+      radiusMd: 2,
+      radiusMob: 2,
+      radiusAdv: 2,
+      radiusCd: 1,
+      radiusKd: 0,
+
+      // límite de keys vecinas a evaluar
+      maxCandidates: 120,
+    });
+  }
+
+  if (!s?.ok || !s.suggestions?.length) return null;
+  if (!legalSet || typeof legalSet.has !== "function") return null;
+
+  for (const sug of s.suggestions) {
+    const mv = _normalizeAlg(sug.move);
+    if (legalSet.has(mv)) {
+      console.log("[PATTERN✔] sugerencia legal encontrada", {
+        key: s.key,
+        move: mv,
+        score: sug.score,
+        count: sug.count,
+        meta: s.meta || null
+      });
+      return mv;
+    }
+  }
+
+  console.log("[PATTERN✘] hubo sugerencias, pero ninguna fue legal aquí", {
+    key: s.key,
+    suggestions: s.suggestions.map(x => x.move),
+    legalCount: (legalSet?.size ?? 0),
+    meta: s.meta || null
+  });
+
+  return null;
+}
 
 // ----------------------
 // Debug IA (con flag)
@@ -49,6 +238,34 @@ function warnIA(...args) {
 // Cooldown / strikes para Python quiet
 const PYTHON_QUIET_MAX_STRIKES       = 4;
 const PYTHON_QUIET_COOLDOWN_TURNS    = 8;
+
+
+// -------------------------------------------------------
+// Coordenadas alfanuméricas en el tablero (A-J / 1-10)
+// -------------------------------------------------------
+function ensureAlgLabels(boardEl){
+  if (!boardEl) return;
+  try{
+    const cells = boardEl.querySelectorAll('[data-r][data-c]');
+    if (!cells || !cells.length) return;
+    for (const el of cells){
+      const r = Number(el.getAttribute('data-r'));
+      const c = Number(el.getAttribute('data-c'));
+      if (!Number.isFinite(r) || !Number.isFinite(c)) continue;
+      const file = String.fromCharCode(97 + c); // a..j
+      const rank = String(SIZE - r);
+      const coord = (file + rank).toUpperCase();
+      el.setAttribute('data-coord', coord);
+      let lab = el.querySelector(':scope > .alg-label');
+      if (!lab){
+        lab = document.createElement('span');
+        lab.className = 'alg-label';
+        el.appendChild(lab);
+      }
+      lab.textContent = coord;
+    }
+  }catch{}
+}
 
 // -------------------------------------------------------
 // Helpers de tablero
@@ -145,7 +362,7 @@ function doHop(board, from, to){
   return fallbackSingleCapture(board, from, to);
 }
 
-// === Movimiento simple directo para jugadas tranquilas (Python) ===
+// === Movimiento simple directo para jugadas tranquilas (Python/patrones) ===
 function simpleMove(board, from, to){
   const nb = board.map(r => r.slice());
   const [fr, fc] = from || [];
@@ -176,6 +393,71 @@ function simpleMove(board, from, to){
 }
 
 // -------------------------------------------------------
+// ✅ PASO CLAVE: Diagnóstico + Auto-ajuste de mapeo (Python -> board)
+// -------------------------------------------------------
+function flipY(rc){
+  if (!Array.isArray(rc) || rc.length < 2) return rc;
+  return [SIZE - 1 - rc[0], rc[1]];
+}
+function flipX(rc){
+  if (!Array.isArray(rc) || rc.length < 2) return rc;
+  return [rc[0], SIZE - 1 - rc[1]];
+}
+function flipXY(rc){
+  if (!Array.isArray(rc) || rc.length < 2) return rc;
+  return [SIZE - 1 - rc[0], SIZE - 1 - rc[1]];
+}
+function piezaEn(b, rc){
+  const [r,c] = rc || [];
+  return (b?.[r]?.[c]) ?? null;
+}
+function esMia(ch, sideColor){
+  try { return !!ch && colorOf(ch) === sideColor; } catch { return false; }
+}
+
+/**
+ * Intenta encontrar una transformación de coordenadas (id/flipY/flipX/flipXY)
+ * para que:
+ *  - exista pieza en from
+ *  - esa pieza sea del color de la IA (aiSide)
+ *  - destino esté vacío
+ *
+ * Devuelve { from, to, mapping, piece, dest } o null.
+ */
+function resolverCoordsPython(board, from, to, aiSide){
+  const candidates = [
+    { name: "id",    tx: (rc) => rc },
+    { name: "flipY", tx: flipY },
+    { name: "flipX", tx: flipX },
+    { name: "flipXY", tx: flipXY },
+  ];
+
+  // 1) Mejor caso: pieza existe, es mía, y destino vacío
+  for (const cand of candidates){
+    const f = cand.tx(from);
+    const t = cand.tx(to);
+    const p = piezaEn(board, f);
+    const d = piezaEn(board, t);
+    if (p && esMia(p, aiSide) && !d) {
+      return { from: f, to: t, mapping: cand.name, piece: p, dest: d };
+    }
+  }
+
+  // 2) Caso fallback: pieza existe (aunque no sepamos color), destino vacío
+  for (const cand of candidates){
+    const f = cand.tx(from);
+    const t = cand.tx(to);
+    const p = piezaEn(board, f);
+    const d = piezaEn(board, t);
+    if (p && !d) {
+      return { from: f, to: t, mapping: cand.name, piece: p, dest: d };
+    }
+  }
+
+  return null;
+}
+
+// -------------------------------------------------------
 // Algebraicas
 // -------------------------------------------------------
 function parseAlgebraicCoord(token){
@@ -190,8 +472,8 @@ function parseAlgebraicCoord(token){
 
   if (col == null || isNaN(rowNum)) return null;
 
-  // Convención Python: fila 1 -> índice 0, fila 10 -> índice 9
-  const row = rowNum - 1;
+  // Convención del FRONTEND: row 0 es la fila 10 (arriba) y row 9 es la fila 1 (abajo)
+  const row = SIZE - rowNum;
 
   if (row < 0 || row >= SIZE) return null;
   return [row, col];
@@ -282,19 +564,10 @@ function movimientoCoincideConMotor(board, from, to){
   }
 
   if (!Array.isArray(moves) || moves.length === 0) {
-    try {
-      logIA("[IA] Motor JS no devuelve movimientos simples desde 'from'; " +
-            "aceptamos jugada Python como fallback.", {
-        from,
-        to,
-        piece,
-        filaBoard: JSON.stringify(board[from[0]] || null)
-      });
-    } catch {}
+    // fallback permisivo (como ya tenías)
     return true;
   }
 
-  // Caso normal: comparamos contra movimientos simples
   for (const m of moves){
     if (!m) continue;
     const dest = m.to || m.dest || m.pos;
@@ -303,52 +576,32 @@ function movimientoCoincideConMotor(board, from, to){
     }
   }
 
-  try {
-    warnIA("[IA] NO hay movimiento simple JS que coincida con la jugada Python.", {
-      from,
-      to,
-      piece,
-      filaBoard: JSON.stringify(board[from[0]] || null)
-    });
-  } catch {}
-
   return false;
 }
 
 // -------------------------------------------------------
-// Sanitizador de ruta contra “doble vía” (traído del index_doble_via_reparadi)
+// Sanitizador de ruta contra “doble vía”
 // -------------------------------------------------------
 function sanitizeCapturePathAgainstDoubleVia(board, path){
-  // Esta función NO depende de Python ni de minimax:
-  // solo mira la geometría de la ruta y el tablero JS.
   if (!Array.isArray(path) || path.length < 2) return null;
 
-  // Clonamos el tablero para simular la cadena sin tocar el real
   const b = cloneBoard(board);
   const start = path[0];
   const piece = b?.[start[0]]?.[start[1]];
   if (!piece) return null;
 
   let myColor;
-  try {
-    myColor = colorOf(piece);
-  } catch {
-    return null;
-  }
+  try { myColor = colorOf(piece); } catch { return null; }
 
-  const capturedSquares = []; // casillas donde ya hubo peones enemigos capturados
+  const capturedSquares = [];
 
   for (let i = 0; i < path.length - 1; i++){
     const from = path[i];
     const to   = path[i + 1];
 
-    const cells = diagPassCells(from, to); // casillas que se pisan al saltar
-    if (!cells.length) {
-      // si no hay casillas intermedias, no es una captura válida
-      return null;
-    }
+    const cells = diagPassCells(from, to);
+    if (!cells.length) return null;
 
-    // Buscar la pieza enemiga que se está capturando en este salto
     let mid = null;
     for (const [r, c] of cells){
       const ch = b?.[r]?.[c];
@@ -360,13 +613,8 @@ function sanitizeCapturePathAgainstDoubleVia(board, path){
         break;
       }
     }
-    if (!mid) {
-      // no se encontró pieza enemiga en el camino → no es captura
-      return null;
-    }
+    if (!mid) return null;
 
-    // Regla clave: NO podemos ni pasar ni caer por una casilla
-    // donde ya hubo un peón enemigo capturado en esta misma cadena.
     const repiteIntermedia = cells.some(([r, c]) =>
       capturedSquares.some(([cr, cc]) => cr === r && cc === c)
     );
@@ -375,21 +623,14 @@ function sanitizeCapturePathAgainstDoubleVia(board, path){
     );
 
     if (repiteIntermedia || repiteDestino){
-      // Aquí es donde se produce la “doble vía”.
-      // Cortamos la ruta justo antes de este salto.
-      if (i === 0) {
-        // Si falla en el primer salto, consideramos toda la ruta inválida
-        return null;
-      }
+      if (i === 0) return null;
       const trimmed = path.slice(0, i + 1);
       logIA("[IA] Ruta recortada para evitar doble vía:", path, "→", trimmed);
       return trimmed;
     }
 
-    // Todo bien, registramos la casilla del peón capturado
     capturedSquares.push(mid);
 
-    // Simulamos el salto en el tablero local
     const [fr, fc] = from;
     const [mr, mc] = mid;
     const [tr, tc] = to;
@@ -399,7 +640,6 @@ function sanitizeCapturePathAgainstDoubleVia(board, path){
     crownIfNeeded(b, [tr, tc]);
   }
 
-  // Si llegamos hasta aquí, la ruta completa es legal
   return path;
 }
 
@@ -413,6 +653,9 @@ export default function mountAI(container){
 
   initEditorSFX();
   ensureGlobalFX();
+
+  // ✅ PASO 8: sincroniza patrones desde backend al iniciar
+  bootstrapPatternSync();
 
   // Imports dinámicos de logMoves / trainer
   let recordMove = null;
@@ -438,7 +681,8 @@ export default function mountAI(container){
     for (let r=0; r<SIZE; r++){
       for (let c=0; c<SIZE; c++){
         const ch = board[r][c];
-        if (!ch || colorOf(ch) !== color) continue;
+        if (!ch) continue;
+        if (colorOf(ch) !== color) continue;
         const mv = baseMovimientos(board, [r, c]) || {};
         const caps = mv.captures || mv.capturas || mv.takes || [];
         if (Array.isArray(caps) && caps.length) return true;
@@ -454,46 +698,82 @@ export default function mountAI(container){
     try { crownIfNeeded(nb, payload?.to); } catch {}
     return nb;
   }
-
   // === UI ===
   container.innerHTML = `
-    <div class="ai-page" style="padding:16px; max-width:980px; margin:0 auto; display:flex; flex-direction:column; gap:12px;">
-      <h2 style="margin:0;">Jugar contra la IA</h2>
-      <div class="card" style="padding:12px; display:flex; justify-content:center;">
-        <div id="board"></div>
-      </div>
-      <div id="ai-toolbar" style="display:flex; gap:8px; flex-wrap:wrap; justify-content:center; align-items:center;">
-        <button class="btn" id="btn-empty">Vaciar</button>
-        <button class="btn" id="btn-init">Inicial</button>
-        <button class="btn" id="btn-turn">Turno</button>
-        <button class="btn" id="btn-undo">Deshacer</button>
-        <button class="btn" id="btn-eraser">Borrador</button>
-        <button class="btn" id="btn-man-r">Peón ROJO</button>
-        <button class="btn" id="btn-queen-r">Dama ROJA</button>
-        <button class="btn" id="btn-man-n">Peón NEGRO</button>
-        <button class="btn" id="btn-queen-n">Dama NEGRA</button>
-        <label class="btn btn--subtle" style="display:inline-flex; align-items:center; gap:8px;">
-          <span>Lado IA:</span>
-          <select id="ai-side" style="padding:.4rem .6rem; border-radius:.5rem;">
-            <option value="N" selected>Negro</option>
-            <option value="R">Rojo</option>
-          </select>
-        </label>
-        <button class="btn" id="btn-restart">Reiniciar</button>
-        <span id="turn-info" class="btn btn--subtle">Turno: —</span>
-        <span id="ai-info" class="btn btn--subtle">IA: —</span>
-        <span id="place-info" class="btn btn--subtle" style="display:none;">Modo colocar</span>
-        <span id="capture-info" class="btn btn--subtle" style="display:none;">Captura obligatoria (humano)</span>
+    <div class="ai-page">
+      <h2 style="margin:0 0 10px 0;">Jugar contra la IA</h2>
+
+      <div class="ai-layout">
+        <!-- Panel izquierdo -->
+        <div class="ai-side ai-side--left">
+          <div class="ai-panel" id="ai-left">
+            <div class="ai-panel-title">Controles</div>
+            <div class="ai-stack">
+              <button class="btn" id="btn-empty">Vaciar</button>
+              <button class="btn" id="btn-init">Inicial</button>
+              <button class="btn" id="btn-turn">Turno</button>
+              <button class="btn" id="btn-undo">Deshacer</button>
+              <button class="btn" id="btn-restart">Reiniciar</button>
+
+              <label class="btn btn--subtle" style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+                <span>Lado IA</span>
+                <select id="ai-side" style="padding:.4rem .6rem; border-radius:.5rem;">
+                  <option value="N" selected>Negro</option>
+                  <option value="R">Rojo</option>
+                </select>
+              </label>
+
+              <span id="turn-info" class="btn btn--subtle">Turno: —</span>
+              <span id="ai-info" class="btn btn--subtle">IA: —</span>
+              <span id="capture-info" class="btn btn--subtle" style="display:none;">Captura obligatoria (humano)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Centro: tablero -->
+        <div class="ai-center">
+          <div class="card">
+            <div id="board"></div>
+          </div>
+        </div>
+
+        <!-- Panel derecho -->
+        <div class="ai-side ai-side--right">
+          <div class="ai-panel" id="ai-right">
+            <div class="ai-panel-title">Piezas</div>
+            <div class="ai-stack">
+              <span id="place-info" class="btn btn--subtle" style="display:none;">Modo colocar</span>
+              <button class="btn" id="btn-eraser">Borrador</button>
+              <button class="btn" id="btn-man-r">Peón ROJO</button>
+              <button class="btn" id="btn-queen-r">Dama ROJA</button>
+              <button class="btn" id="btn-man-n">Peón NEGRO</button>
+              <button class="btn" id="btn-queen-n">Dama NEGRA</button>
+            </div>
+          </div>
+
+          <!-- Panel aprendizaje (tech) -->
+          <div class="ai-panel" id="ai-learning-panel">
+            <div class="ai-panel-title">Aprendizaje</div>
+            <div id="ai-learning-mount"></div>
+          </div>
+
+          <!-- ✅ Panel minimalista: guardar jugada correcta -->
+          <div id="ai-teach-mount"></div>
+        </div>
       </div>
     </div>
   `;
 
-  const $toolbar    = container.querySelector("#ai-toolbar");
-  const $boardEl    = container.querySelector("#board");
-  const $turnInfo   = container.querySelector("#turn-info");
-  const $aiInfo     = container.querySelector("#ai-info");
-  const $placeInfo  = container.querySelector("#place-info");
+
+  const $toolbar     = container.querySelector("#ai-learning-mount");
+  const $boardEl     = container.querySelector("#board");
+  const $turnInfo    = container.querySelector("#turn-info");
+  const $aiInfo      = container.querySelector("#ai-info");
+  const $placeInfo   = container.querySelector("#place-info");
   const $captureInfo = container.querySelector("#capture-info");
+
+  const $teachMount  = container.querySelector("#ai-teach-mount");
+
   const $btnEmpty   = container.querySelector("#btn-empty");
   const $btnInit    = container.querySelector("#btn-init");
   const $btnTurn    = container.querySelector("#btn-turn");
@@ -503,9 +783,7 @@ export default function mountAI(container){
   const $btnManN    = container.querySelector("#btn-man-n");
   const $btnQueenR  = container.querySelector("#btn-queen-r");
   const $btnQueenN  = container.querySelector("#btn-queen-n");
-  const $btnBack    = container.querySelector("#btn-back");
   const $btnRestart = container.querySelector("#btn-restart");
-  const $btnAiMove  = container.querySelector("#btn-ai-move");
   const $aiSideSel  = container.querySelector("#ai-side");
 
   // Panel aprendizaje IA
@@ -514,9 +792,7 @@ export default function mountAI(container){
       toolbarEl: $toolbar,
       getFen: () => {
         try {
-          if (typeof __D10 !== "undefined" && __D10?.fen) {
-            return __D10.fen();
-          }
+          if (typeof __D10 !== "undefined" && __D10?.fen) return __D10.fen();
         } catch {}
         return JSON.stringify(board);
       },
@@ -525,7 +801,81 @@ export default function mountAI(container){
     });
   }
 
-  function render(){ drawBoard($boardEl, board, SIZE, dark); }
+  // =====================================
+  // ✅ Panel "Enseñar a la IA" (feedback)
+  // =====================================
+  const teachState = {
+    // Se llena al hacer Undo de una jugada de la IA
+    pending: null,
+    awaitingCorrect: false,
+
+    // Contexto de la última jugada de la IA
+    lastAiSide: null,      // "R" | "N"
+    lastAiBoard: null,     // board 10x10 (antes de que la IA jugara)
+  };
+
+  // diff simple: intenta inferir "from-to" desde cambio de tablero
+  function inferMoveAlgFromDiff(prevBoard, nextBoard) {
+    try {
+      if (!Array.isArray(prevBoard) || !Array.isArray(nextBoard)) return null;
+      let from = null;
+      let to = null;
+
+      for (let r = 0; r < SIZE; r++) {
+        for (let c = 0; c < SIZE; c++) {
+          const a = prevBoard?.[r]?.[c] ?? null;
+          const b = nextBoard?.[r]?.[c] ?? null;
+          if (a === b) continue;
+          // salida de una ficha
+          if (a && !b) from = [r, c];
+          // llegada de una ficha
+          if (!a && b) to = [r, c];
+          // coronación: ficha cambia en destino (tratamos como destino)
+          if (a && b && a !== b) {
+            // si antes estaba vacía y ahora hay pieza no aplica; pero aquí puede ser cambio de pieza
+            // no podemos inferir to con seguridad; lo dejamos
+          }
+        }
+      }
+
+      if (!from || !to) return null;
+      const fa = _rcToAlg10x10(from);
+      const ta = _rcToAlg10x10(to);
+      if (!fa || !ta) return null;
+      return `${fa}-${ta}`;
+    } catch {
+      return null;
+    }
+  }
+
+  // Montaje del panel (si existe el mount)
+  const teachPanel = $teachMount
+    ? mountTeachPanel({
+        mountPoint: $teachMount,
+        getState: () => teachState,
+        onTeach: async (p) => {
+          // Guardamos como experiencia (JSONL) en backend
+          const entry = {
+            ts: Date.now(),
+            board: p.board,
+            side: p.side,
+            move: p.correct_move,
+            score: 1.0,
+          };
+          const res = await enviarLogIA([entry]);
+
+          // limpiar estado
+          teachState.pending = null;
+          teachState.awaitingCorrect = false;
+          teachState.lastAiBoard = null;
+
+          try { teachPanel?.refresh?.(); } catch {}
+          return res;
+        },
+      })
+    : null;
+
+  function render(){ drawBoard($boardEl, board, SIZE, dark); ensureAlgLabels($boardEl); }
 
   function setCaptureInfo() {
     const isHumanTurn = turn !== aiSide;
@@ -546,7 +896,24 @@ export default function mountAI(container){
   const baseCtx = {
     SIZE, container,
     getBoard: () => board,
-    setBoard: (b) => { board = b; },
+    setBoard: (b) => {
+      const prev = board;
+      board = b;
+
+      // Si estamos en modo "enseñar" (tras Undo), intentamos inferir
+      // la jugada correcta desde el cambio de tablero.
+      try {
+        const p = teachState?.pending;
+        if (teachState?.awaitingCorrect && p && !p.correct_move) {
+          const mv = inferMoveAlgFromDiff(prev, b);
+          if (mv) {
+            p.correct_move = mv;
+            teachState.awaitingCorrect = false;
+            teachPanel?.refresh?.();
+          }
+        }
+      } catch {}
+    },
     getTurn:  () => turn,
     setTurn:  (t) => { turn = t; setTurnText(); setAiText(); maybeAi(); },
     getStepState: () => stepState,
@@ -611,9 +978,37 @@ export default function mountAI(container){
     try {
       let best = null;
 
+      const fenCurrent =
+        typeof __D10 !== "undefined" && __D10?.fen
+          ? __D10.fen()
+          : JSON.stringify(board);
+
+      const sideCode = aiSide === COLOR.ROJO ? "R" : "N";
+
+      // ✅ Enseñanza: guardamos el tablero ANTES de que la IA juegue
+      // para que el usuario pueda hacer Undo y enseñarle la jugada correcta.
+      try {
+        teachState.lastAiSide = sideCode;
+        teachState.lastAiBoard = cloneBoard(board);
+
+        // también guardamos para Undo (así el botón deshacer revierte la jugada de la IA)
+        undoStack.push(cloneBoard(board));
+        if (undoStack.length > 100) undoStack.shift();
+      } catch {}
+
       const hayCapturasAI = anyCaptureAvailableFor(aiSide);
 
+      // ✅ Debug Paso 3: validar si hay sugerencia legal (solo log)
+      try {
+        const legalSet = collectAllLegalAlgMoves(board, aiSide);
+        const mvPatternDebug = pickFirstLegalPatternSuggestion({ fen: fenCurrent, side: sideCode, legalSet });
+        if (mvPatternDebug) logIA("[PATTERN] (debug) sugerencia legal del patrón:", mvPatternDebug);
+      } catch (e) {
+        console.warn("[PATTERN] error validando sugerencias (debug)", e);
+      }
+
       if (hayCapturasAI) {
+        // Capturas -> SOLO minimax JS
         logIA("[IA] Capturas disponibles para IA → usar SOLO minimax JS");
         best = minimaxChooseBestMove(
           board,
@@ -636,189 +1031,163 @@ export default function mountAI(container){
         );
         if (best) best.origin = "js";
       } else {
-        let pythonTried = false;
+        // ✅ PASO 6: si NO hay capturas, intentar patrones (fuzzy) ANTES de Python/minimax
+        try {
+          const legalSet = collectAllLegalAlgMoves(board, aiSide);
+          const mvPattern = pickFirstLegalPatternSuggestion({ fen: fenCurrent, side: sideCode, legalSet });
 
-        if (pythonQuietCooldown > 0) {
-          logIA("[IA] Python quiet deshabilitado temporalmente. Restan turnos:", pythonQuietCooldown);
-          pythonQuietCooldown--;
-        } else {
-          pythonTried = true;
-
-          try {
-            const fen =
-              typeof __D10 !== "undefined" && __D10?.fen
-                ? __D10.fen()
-                : JSON.stringify(board);
-
-            const sideCode = aiSide === COLOR.ROJO ? "R" : "N";
-
-            logIA("[IA] (Python) Enviando posición al backend (quiet):", {
-              sideCode,
-              fenPreview: typeof fen === "string" ? fen.slice(0, 80) : fen,
-            });
-
-            // ✅ PASO CLAVE: enviar (fen, side, board) para evitar 422
-            const respuesta = await pedirJugadaIA(
-              fen,
-              sideCode,
-              board
-            );
-
-            logIA("[IA] (Python) Sugerencia recibida:", respuesta);
-
-            if (respuesta && typeof respuesta.move === "string") {
-              const route = parseAlgebraicRoute(respuesta.move);
-
-              if (route && route.length >= 2) {
-                logIA("[IA] Jugada Python (ruta):", respuesta.move);
-                const from = route[0];
-                const to   = route[route.length - 1];
-                logIA("[IA] From/To calculados:", from, "→", to);
-
-                let isCapture = false;
-                for (let i = 0; i < route.length - 1; i++) {
-                  const f = route[i];
-                  const t = route[i + 1];
-                  const dr = t[0] - f[0];
-                  const dc = t[1] - f[1];
-                  if (Math.abs(dr) === 2 && Math.abs(dc) === 2) {
-                    const mid = findMidOnCurrentBoard(board, f, t);
-                    if (mid) {
-                      isCapture = true;
-                      break;
-                    }
-                  }
-                }
-
-                if (!isCapture) {
-                  const esValida = movimientoCoincideConMotor(board, from, to);
-
-                  logIA("[IA] Movimientos simples legales según JS desde 'from':",
-                    ((baseMovimientos(board, from) || {}).moves ||
-                     (baseMovimientos(board, from) || {}).movs ||
-                     (baseMovimientos(board, from) || {}).simple ||
-                     []
-                    )
-                  );
-
-                  const pieceBoard = board?.[from[0]]?.[from[1]] || null;
-                  const destBoard  = board?.[to[0]]?.[to[1]]   || null;
-
-                  if (!pieceBoard) {
-                    logIA("[IA] Python: 'from' está vacío en board; se descarta jugada tranquila.", {
-                      from, to, pieceBoard, destBoard
-                    });
-                  } else if (destBoard) {
-                    logIA("[IA] Python: destino ocupado en board; se descarta jugada tranquila.", {
-                      from, to, pieceBoard, destBoard
-                    });
-                  } else if (esValida) {
-                    best = {
-                      type: "move",
-                      from,
-                      to,
-                      origin: "python",
-                    };
-                    logIA("[IA] Usando jugada de Python (ruta tranquila, validada y con destino vacío):", respuesta.move, from, to, best);
-                  } else {
-                    logIA("[IA] Python dio ruta pero el motor JS no la acepta como movimiento simple. Se ignora.", {
-                      from, to
-                    });
-                  }
-                } else {
-                  logIA("[IA] Python sugirió captura pero JS dice que no hay capturas. Se descarta.");
-                }
+          if (mvPattern) {
+            const route = parseAlgebraicRoute(mvPattern);
+            if (route && route.length >= 2) {
+              if (route.length === 2) {
+                best = { type: "move", from: route[0], to: route[1], origin: "pattern" };
               } else {
-                const parsed = parseAlgebraicMove(respuesta.move);
-                if (parsed) {
-                  logIA("[IA] Jugada Python (move):", respuesta.move);
-                  logIA("[IA] From/To calculados:", parsed.from, "→", parsed.to);
-
-                  const esValida = movimientoCoincideConMotor(board, parsed.from, parsed.to);
-
-                  logIA("[IA] Movimientos simples legales según JS desde 'from':",
-                    ((baseMovimientos(board, parsed.from) || {}).moves ||
-                     (baseMovimientos(board, parsed.from) || {}).movs ||
-                     (baseMovimientos(board, parsed.from) || {}).simple ||
-                     []
-                    )
-                  );
-
-                  const pieceBoard = board?.[parsed.from[0]]?.[parsed.from[1]] || null;
-                  const destBoard  = board?.[parsed.to[0]]  ?. [parsed.to[1]]  || null;
-
-                  if (!pieceBoard) {
-                    logIA("[IA] Python: 'from' está vacío en board; se descarta jugada tranquila.", {
-                      from: parsed.from,
-                      to:   parsed.to,
-                      pieceBoard,
-                      destBoard
-                    });
-                  } else if (destBoard) {
-                    logIA("[IA] Python: destino ocupado en board; se descarta jugada tranquila.", {
-                      from: parsed.from,
-                      to:   parsed.to,
-                      pieceBoard,
-                      destBoard
-                    });
-                  } else if (esValida) {
-                    best = {
-                      type: "move",
-                      from: parsed.from,
-                      to:   parsed.to,
-                      origin: "python",
-                    };
-                    logIA("[IA] Usando jugada de Python (simple, validada JS):", best);
-                  } else {
-                    logIA("[IA] Jugada simple de Python NO coincide con motor JS. Se descarta.");
-                  }
-                } else {
-                  logIA("[IA] No se pudo parsear respuesta.move:", respuesta.move);
-                }
+                best = { type: "capture", path: route, origin: "pattern" };
               }
-            }
-
-          } catch (err) {
-            warnIA("[IA] (Python) Error al llamar a pedirJugadaIA:", err);
-          }
-
-          if (pythonTried) {
-            if (best && best.origin === "python") {
-              pythonQuietStrikes = 0;
-            } else {
-              pythonQuietStrikes++;
-              logIA("[IA] Python quiet sin jugada usable. Strikes consecutivos:", pythonQuietStrikes);
-              if (pythonQuietStrikes >= PYTHON_QUIET_MAX_STRIKES) {
-                logIA("[IA] Deshabilitando temporalmente Python quiet por exceso de sugerencias inválidas.");
-                pythonQuietCooldown = PYTHON_QUIET_COOLDOWN_TURNS;
-                pythonQuietStrikes = 0;
-              }
+              logIA("[PATTERN] ✅ usando sugerencia de patrón (legal) como jugada:", best);
             }
           }
+        } catch (e) {
+          console.warn("[PATTERN] error aplicando patrones (Paso 6)", e);
         }
 
+        // Si NO hubo patrón usable -> intentar Python quiet -> fallback minimax
         if (!best) {
-          logIA("[IA] Sin jugada usable de Python (quiet), usando minimax JS.");
-          best = minimaxChooseBestMove(
-            board,
-            aiSide,
-            6,
-            {
-              COLOR, SIZE, colorOf,
-              movimientos: baseMovimientos,
-              aplicarMovimiento: baseAplicarMovimiento,
-              crownIfNeeded,
-              evaluate
-            },
-            {
-              rootCaptureOnly: false,
-              quiescence: true,
-              useSEE: true,
-              seePenaltyMargin: -0.08,
-              timeMs: 900
+          let pythonTried = false;
+
+          if (pythonQuietCooldown > 0) {
+            logIA("[IA] Python quiet deshabilitado temporalmente. Restan turnos:", pythonQuietCooldown);
+            pythonQuietCooldown--;
+          } else {
+            pythonTried = true;
+
+            try {
+              logIA("[IA] (Python) Enviando posición al backend (quiet):", {
+                sideCode,
+                fenPreview: typeof fenCurrent === "string" ? fenCurrent.slice(0, 80) : fenCurrent,
+              });
+
+              // enviar (fen, side, board) para evitar 422
+              const respuesta = await pedirJugadaIA(fenCurrent, sideCode, board);
+
+              logIA("[IA] (Python) Sugerencia recibida:", respuesta);
+
+              if (respuesta && typeof respuesta.move === "string") {
+                const route = parseAlgebraicRoute(respuesta.move);
+
+                // Si viene como ruta
+                if (route && route.length >= 2) {
+                  const fromRaw = route[0];
+                  const toRaw   = route[route.length - 1];
+
+                  // Detectar si parece captura por geometría + mid (aunque "quiet")
+                  let isCapture = false;
+                  for (let i = 0; i < route.length - 1; i++) {
+                    const f = route[i];
+                    const t = route[i + 1];
+                    const dr = t[0] - f[0];
+                    const dc = t[1] - f[1];
+                    if (Math.abs(dr) === 2 && Math.abs(dc) === 2) {
+                      const mid = findMidOnCurrentBoard(board, f, t);
+                      if (mid) { isCapture = true; break; }
+                    }
+                  }
+
+                  if (!isCapture) {
+                    const resolved = resolverCoordsPython(board, fromRaw, toRaw, aiSide);
+                    const from = resolved?.from || fromRaw;
+                    const to   = resolved?.to   || toRaw;
+
+                    const pieceBoard = board?.[from[0]]?.[from[1]] || null;
+                    const destBoard  = board?.[to[0]]?.[to[1]]     || null;
+
+                    const esValida = movimientoCoincideConMotor(board, from, to);
+
+                    if (pieceBoard && !destBoard && esValida) {
+                      best = { type: "move", from, to, origin: "python", mapping: resolved?.mapping || "id" };
+                      logIA("[IA] Usando jugada de Python (quiet, validada):", best);
+                    } else {
+                      logIA("[IA] Python quiet descartada (pieza/destino/validez):", {
+                        move: respuesta.move, fromRaw, toRaw, from, to,
+                        mapping: resolved?.mapping || "id",
+                        pieceBoard, destBoard, esValida
+                      });
+                    }
+                  } else {
+                    logIA("[IA] Python sugirió captura pero JS dice que no hay capturas. Se descarta.");
+                  }
+                } else {
+                  // Si viene como move simple "a3-b4"
+                  const parsed = parseAlgebraicMove(respuesta.move);
+                  if (parsed) {
+                    const resolved = resolverCoordsPython(board, parsed.from, parsed.to, aiSide);
+                    const from = resolved?.from || parsed.from;
+                    const to   = resolved?.to   || parsed.to;
+
+                    const pieceBoard = board?.[from[0]]?.[from[1]] || null;
+                    const destBoard  = board?.[to[0]]?.[to[1]]     || null;
+
+                    const esValida = movimientoCoincideConMotor(board, from, to);
+
+                    if (pieceBoard && !destBoard && esValida) {
+                      best = { type: "move", from, to, origin: "python", mapping: resolved?.mapping || "id" };
+                      logIA("[IA] Usando jugada de Python (simple, validada):", best);
+                    } else {
+                      logIA("[IA] Python simple descartada (pieza/destino/validez):", {
+                        move: respuesta.move,
+                        rawFrom: parsed.from, rawTo: parsed.to,
+                        from, to, mapping: resolved?.mapping || "id",
+                        pieceBoard, destBoard, esValida
+                      });
+                    }
+                  } else {
+                    logIA("[IA] No se pudo parsear respuesta.move:", respuesta.move);
+                  }
+                }
+              }
+
+            } catch (err) {
+              warnIA("[IA] (Python) Error al llamar a pedirJugadaIA:", err);
             }
-          );
-          if (best) best.origin = "js";
+
+            if (pythonTried) {
+              if (best && best.origin === "python") {
+                pythonQuietStrikes = 0;
+              } else {
+                pythonQuietStrikes++;
+                logIA("[IA] Python quiet sin jugada usable. Strikes consecutivos:", pythonQuietStrikes);
+                if (pythonQuietStrikes >= PYTHON_QUIET_MAX_STRIKES) {
+                  logIA("[IA] Deshabilitando temporalmente Python quiet por exceso de sugerencias inválidas.");
+                  pythonQuietCooldown = PYTHON_QUIET_COOLDOWN_TURNS;
+                  pythonQuietStrikes = 0;
+                }
+              }
+            }
+          }
+
+          if (!best) {
+            logIA("[IA] Sin jugada usable (patrón/Python quiet), usando minimax JS.");
+            best = minimaxChooseBestMove(
+              board,
+              aiSide,
+              6,
+              {
+                COLOR, SIZE, colorOf,
+                movimientos: baseMovimientos,
+                aplicarMovimiento: baseAplicarMovimiento,
+                crownIfNeeded,
+                evaluate
+              },
+              {
+                rootCaptureOnly: false,
+                quiescence: true,
+                useSEE: true,
+                seePenaltyMargin: -0.08,
+                timeMs: 900
+              }
+            );
+            if (best) best.origin = "js";
+          }
         }
       }
 
@@ -862,29 +1231,15 @@ export default function mountAI(container){
       if (!best) {
         turn = (turn === COLOR.ROJO) ? COLOR.NEGRO : COLOR.ROJO;
         render(); ctx.paintState(); setTurnText(); setAiText();
-        logIA("[IA] Sin jugada best; solo cambio de turno. Turno ahora:", turn === COLOR.ROJO ? "ROJO" : "NEGRO");
+        logIA("[IA] Sin jugada best; solo cambio de turno.");
         return;
       }
 
-      // Registro de jugada (si logMoves existe)
-      try {
-        if (typeof recordMove === "function") {
-          const fenNow =
-            typeof __D10 !== "undefined" && __D10?.fen
-              ? __D10.fen()
-              : JSON.stringify(board);
-          recordMove({ fen: fenNow, move: JSON.stringify(best), score: 0 });
-        }
-      } catch {}
-
       if (best.type === "capture") {
-        // 🔴 Aplicar sanitizado de doble vía ANTES de animar
         let path = best.path;
         const sanitized = sanitizeCapturePathAgainstDoubleVia(board, path);
 
-        if (!sanitized || sanitized.length < 2) {
-          warnIA("[IA] Ruta de captura inválida o vacía tras sanitizar. Se mantiene la ruta original (caso extremo).");
-        } else {
+        if (sanitized && sanitized.length >= 2) {
           if (sanitized.length < path.length) {
             logIA("[IA] Ruta de captura recortada para evitar doble vía:", path, "→", sanitized);
           }
@@ -907,31 +1262,21 @@ export default function mountAI(container){
         try { onMove(); } catch {}
         ringOnNextGhost(chFrom, { duration: 800 });
 
-        const rowFromBefore = board[m.from[0]] ? [...board[m.from[0]]] : null;
-        const rowToBefore   = board[m.to[0]]   ? [...board[m.to[0]]]   : null;
-
         await animateCellMove($boardEl, m.from, m.to, { pieceChar: chFrom, lift: 10 });
-
         board = simpleMove(board, m.from, m.to);
 
         logIA("[IA] simpleMove aplicado (IA):", {
           from: m.from,
           to: m.to,
           piece: chFrom,
-          rowFromBefore,
-          rowToBefore,
-          rowFromAfter: board[m.from[0]] ? [...board[m.from[0]]] : null,
-          rowToAfter:   board[m.to[0]]   ? [...board[m.to[0]]]   : null
+          mapping: m.mapping || null,
+          origin: m.origin || null
         });
       }
 
       stepState = null;
       turn = (turn === COLOR.ROJO) ? COLOR.NEGRO : COLOR.ROJO;
       render(); ctx.paintState(); setTurnText(); setAiText();
-      logIA("[IA] Render/paintState tras jugada IA.", {
-        turno: turn === COLOR.ROJO ? "ROJO" : "NEGRO",
-        aiSide: aiSide === COLOR.ROJO ? "ROJO" : "NEGRO"
-      });
 
     } catch(e){
       console.warn("[IA] fallo aplicando jugada:", e);
@@ -944,34 +1289,13 @@ export default function mountAI(container){
     const sel = $aiSideSel?.value || "N";
     aiSide = (sel === "R") ? COLOR.ROJO : COLOR.NEGRO;
 
-    logIA("[IA] maybeAi → check turno IA", {
-      turn: turn === COLOR.ROJO ? "ROJO" : "NEGRO",
-      aiSide: aiSide === COLOR.ROJO ? "ROJO" : "NEGRO",
-      thinking
-    });
-
     if (turn === aiSide && !thinking) {
-      logIA("[IA] maybeAi → turno de la IA, llamando a doAiMove()", {
-        turn: turn === COLOR.ROJO ? "ROJO" : "NEGRO",
-        aiSide: aiSide === COLOR.ROJO ? "ROJO" : "NEGRO"
-      });
       doAiMove();
-    } else {
-      logIA("[IA] maybeAi → no le toca a la IA todavía.", {
-        turn: turn === COLOR.ROJO ? "ROJO" : "NEGRO",
-        aiSide: aiSide === COLOR.ROJO ? "ROJO" : "NEGRO",
-        thinking
-      });
     }
   }
 
   // Botones y edición
   function repaint(){ ctx.setBoard(board); render(); ctx.paintState(); setCaptureInfo(); }
-
-  $btnBack?.addEventListener("click", () => {
-    container.innerHTML = "";
-    import("../Home/index.js").then(m => m.default?.(container));
-  });
 
   $btnRestart?.addEventListener("click", () => {
     board = startBoard();
@@ -984,7 +1308,6 @@ export default function mountAI(container){
     maybeAi();
   });
 
-  $btnAiMove?.addEventListener("click", () => doAiMove());
   $aiSideSel?.addEventListener("change", () => { maybeAi(); setCaptureInfo(); });
 
   $btnEmpty?.addEventListener("click", () => {
@@ -1012,6 +1335,23 @@ export default function mountAI(container){
     if (prev){
       board = prev;
       repaint();
+
+      // ✅ Si la última jugada fue de la IA, permitir modo "enseñar":
+      // - Undo vuelve al tablero antes de la jugada de la IA
+      // - el usuario juega la correcta
+      // - luego presiona "Enseñar"
+      try {
+        const side = teachState?.lastAiSide;
+        if (side && Array.isArray(board) && board.length === 10) {
+          teachState.pending = {
+            board: cloneBoard(board),
+            side,
+            correct_move: "",
+          };
+          teachState.awaitingCorrect = true;
+          teachPanel?.refresh?.();
+        }
+      } catch {}
     }
   });
 
@@ -1032,5 +1372,7 @@ export default function mountAI(container){
   $btnQueenN?.addEventListener("click", () => setPlacingHandler("N"));
 
   // Arranque
+  setTurnText();
+  setAiText();
   maybeAi();
 }

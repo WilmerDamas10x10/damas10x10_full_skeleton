@@ -1,0 +1,9 @@
+{
+  "test|s:R|md:0|kd:0|cd:0|mob:0|adv:0|cap:0": {
+    "n": 1,
+    "lastTs": 123,
+    "moveCounts": {
+      "a1-b2": 1
+    }
+  }
+}

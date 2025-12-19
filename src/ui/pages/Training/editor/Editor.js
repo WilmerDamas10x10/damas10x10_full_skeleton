@@ -63,7 +63,9 @@ import {
   getAICaptureInfo,
   recordAIMove,
   flushAICapture,
+  stopAndFlushAICapture,
 } from "./lib/ai.captureSession.js";
+
 
 /* ============================================================================ */
 
@@ -348,6 +350,61 @@ function ensureBoardVisible(container, board) {
   } catch {}
 }
 
+/* =======================================================================
+   ✅ KEY canónica (idéntica a ai_engine.py board_to_key)
+   - '.' para vacío
+   - 10 filas separadas por '/'
+   - incluye side al final
+   Ej: "....n...../..r......./...|side:N"
+   ======================================================================= */
+function boardToKeyCanonical(board10, side){
+  try{
+    const s = String(side || "R").toUpperCase() === "N" ? "N" : "R";
+    if (!Array.isArray(board10) || board10.length !== 10) return null;
+
+    const rows = [];
+    for(let r=0;r<10;r++){
+      const row = board10[r];
+      if (!Array.isArray(row) || row.length !== 10) return null;
+      let out = "";
+      for(let c=0;c<10;c++){
+        const ch = row[c];
+        out += (ch === "r" || ch === "n" || ch === "R" || ch === "N") ? ch : ".";
+      }
+      rows.push(out);
+    }
+    return rows.join("/") + `|side:${s}`;
+  }catch{
+    return null;
+  }
+}
+
+/* ---- Debug opcional: comparar key con backend (/ai/debug-key) ---- */
+async function debugKeyOnBackend(board10, side){
+  try{
+    const url =
+      (window.__IA_BACKEND_URL) ||
+      (import.meta?.env?.VITE_IA_BACKEND_URL) ||
+      (import.meta?.env?.VITE_BACKEND_URL) ||
+      "http://127.0.0.1:8001";
+    const r = await fetch(String(url).replace(/\/$/,"") + "/ai/debug-key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ board: board10, side }),
+    });
+    const data = await r.json().catch(()=>null);
+    if (!r.ok) {
+      console.warn("[AI-DEBUG-KEY] backend non-ok", r.status, data);
+      return null;
+    }
+    return data;
+  }catch(e){
+    // silencioso: no queremos romper Editor si backend no está
+    console.warn("[AI-DEBUG-KEY] no disponible:", e?.message || e);
+    return null;
+  }
+}
+
 /* ---------- Helpers IA (Editor) ---------- */
 function parseAlgebraToCoords(moveStr) {
   // Soporta: "e3-f4" o "c3-e5-g7"
@@ -530,26 +587,26 @@ export default function TrainingEditor(container) {
   const boardRef = { current: board };
   const setBoardFX = makeSetBoardWithFX(boardEl, boardRef);
 
-    // ==========================
+  // ==========================
   // 🧠 Learning bridge (Editor -> logMoves.js)
   // ==========================
-  function emitLearningMoveFromEditor({ move, score = 0, tag = "editor" } = {}) {
+  function emitLearningMoveFromEditor({ move, score = 0, tag = "editor", k = null } = {}) {
     try {
       // lado en formato "R"/"N"
       const side = (turn === COLOR.ROJO) ? "R" : "N";
 
-      // ✅ tablero 10x10 REAL (sin FEN raro): lo mandamos como JSON string
+      // ✅ tablero 10x10 REAL: lo mandamos como JSON string
       const board10 = boardRef.current;
       const fen = JSON.stringify(board10);
 
-      // Si no hay move, no lo mandamos como entrenamiento útil
       if (!move) return false;
 
       window.dispatchEvent(new CustomEvent("learning:push-move", {
         detail: {
           ts: Date.now(),
-          fen,          // ✅ aquí va el tablero 10x10
-          side,         // ✅ "R" o "N"
+          fen,          // legacy (string JSON del board 10x10)
+          k: k || null, // ✅ NUEVO: key canónica (si está)
+          side,         // "R" o "N"
           move: String(move),
           score: Number(score) || 0,
           tag,
@@ -785,13 +842,6 @@ export default function TrainingEditor(container) {
   }
 
   container.querySelector("#btn-cambiar-turno")?.addEventListener("click", () => {
-    // ✅ FASE 1: si estás grabando, logueamos snapshot del estado antes del cambio manual
-    try {
-      if (isAICapturing()) {
-        recordAIMove({ fen: boardForSave(), side: turn, tag: "editor_switch_turn_btn" });
-      }
-    } catch {}
-
     setPlacing(null);
     stepState = null;
     setChainFlag(false);
@@ -852,13 +902,6 @@ export default function TrainingEditor(container) {
     controller: {
       continueOrEndChain,
       switchTurn: () => {
-        // ✅ FASE 1: registrar snapshot en el punto “final de jugada” (cambio de turno)
-        try {
-          if (isAICapturing()) {
-            recordAIMove({ fen: boardForSave(), side: turn, tag: "editor_switch_turn_controller" });
-          }
-        } catch {}
-
         try { clearSelectedGlowRemote(boardEl); } catch {}
         switchTurn();
         setTurnTextUI();
@@ -896,146 +939,154 @@ export default function TrainingEditor(container) {
   // ==========================
   // ✅ FASE 1: PANEL IA (Editor)
   // ==========================
-(function mountAICapturePanel(){
-  const tools = document.getElementById("tools") || container.querySelector("#tools");
-  if (!tools) return;
+  (function mountAICapturePanel(){
+    const tools = document.getElementById("tools") || container.querySelector("#tools");
+    if (!tools) return;
 
-  // CSS mínimo inline (evita tocar otros .css)
-  try {
-    const id = "ai-capture-panel-css";
-    if (!document.getElementById(id)) {
-      const st = document.createElement("style");
-      st.id = id;
-      st.textContent = `
-        .ai-capture-box{margin-top:8px;display:flex;flex-direction:column;gap:6px}
-        .ai-capture-row{display:flex;gap:6px;flex-wrap:wrap}
-        .ai-capture-state{font-size:12px;opacity:.9}
-        .ai-hide{display:none!important}
-      `;
-      document.head.appendChild(st);
-    }
-  } catch {}
-
-  // Evitar duplicados si re-montas vista
-  tools.querySelector(".ai-capture-box")?.remove();
-
-  const box = document.createElement("div");
-  box.className = "ai-capture-box";
-  box.innerHTML = `
-    <div class="ai-capture-row">
-      <button class="btn" id="btn-ai-toggle" type="button">▶️ Empezar grabación IA</button>
-      <button class="btn" id="btn-ai-play" type="button">🤖 Jugar por la IA</button>
-    </div>
-    <div class="ai-capture-state" id="ai-rec-state"></div>
-  `;
-  tools.appendChild(box);
-
-  const stateEl = box.querySelector("#ai-rec-state");
-  const btnToggle = box.querySelector("#btn-ai-toggle");
-  const btnPlay   = box.querySelector("#btn-ai-play");
-
-  const refresh = () => {
-    const info = getAICaptureInfo();
-    const rec = !!info.recording;
-
-    // ✅ Siempre visible; solo se habilita cuando estás grabando
-    btnPlay.disabled = !rec;
-    btnToggle.textContent = rec
-      ? "⏹️ Detener grabación IA"
-      : "▶️ Empezar grabación IA";
-
-    // estado discreto
-    stateEl.textContent = rec
-      ? `IA: GRABANDO • buffer: ${info.buffered}`
-      : `IA: OFF`;
-  };
-
-  async function stopAndFlush() {
-    const info = stopAICapture();
-    const res = await flushAICapture();
-    if (res.ok) toast(`IA: guardadas ${res.sent} jugadas`, 2400);
-    else {
-      toast("IA: no se pudo guardar (ver consola)", 2600);
-      console.warn("[AI-CAPTURE] flush error:", res);
-    }
-    refresh();
-    return { info, res };
-  }
-
-  btnToggle.onclick = async () => {
-    const info = getAICaptureInfo();
-    if (!info.recording) {
-      // START
-      startAICapture();
-      toast("IA: grabación iniciada", 1600);
-      refresh();
-      return;
-    }
-    // STOP + FLUSH
-    await stopAndFlush();
-  };
-
-  async function playAIMove() {
+    // CSS mínimo inline (evita tocar otros .css)
     try {
-      // ✅ IMPORTANTE: para que "aprendizaje por experiencia" coincida,
-// mandamos SIEMPRE el tablero 10x10 (boardSnapshot) a pedirJugadaIA().
-const boardSnap = boardRef.current;
-const sideBefore = (turn === COLOR.ROJO) ? "R" : "N";
-
-const data = await pedirJugadaIA("", sideBefore, boardSnap);
-const moveStr = data?.move || data?.jugada || data?.bestMove || null;
-if (!moveStr) { toast("IA: no hay jugada", 2000); return; }
-
-      const coords = parseAlgebraToCoords(moveStr);
-      if (!coords) {
-        toast("IA: formato de jugada no reconocido", 2400);
-        console.warn("[IA] move recibido:", moveStr);
-        return;
+      const id = "ai-capture-panel-css";
+      if (!document.getElementById(id)) {
+        const st = document.createElement("style");
+        st.id = id;
+        st.textContent = `
+          .ai-capture-box{margin-top:8px;display:flex;flex-direction:column;gap:6px}
+          .ai-capture-row{display:flex;gap:6px;flex-wrap:wrap}
+          .ai-capture-state{font-size:12px;opacity:.9}
+          .ai-hide{display:none!important}
+        `;
+        document.head.appendChild(st);
       }
+    } catch {}
 
-      const applied = applyMoveCompat(board, coords);
-      if (!applied.ok || !applied.board) {
-        toast("IA: no pude aplicar esa jugada (ver consola)", 2600);
-        console.warn("[IA] applyMoveCompat fallo:", applied, { moveStr, coords });
-        return;
+    // Evitar duplicados si re-montas vista
+    tools.querySelector(".ai-capture-box")?.remove();
+
+    const box = document.createElement("div");
+    box.className = "ai-capture-box";
+    box.innerHTML = `
+      <div class="ai-capture-row">
+        <button class="btn" id="btn-ai-toggle" type="button">▶️ Empezar grabación IA</button>
+        <button class="btn" id="btn-ai-play" type="button">🤖 Jugar por la IA</button>
+      </div>
+      <div class="ai-capture-state" id="ai-rec-state"></div>
+    `;
+    tools.appendChild(box);
+
+    const stateEl = box.querySelector("#ai-rec-state");
+    const btnToggle = box.querySelector("#btn-ai-toggle");
+    const btnPlay   = box.querySelector("#btn-ai-play");
+
+    const refresh = () => {
+      const info = getAICaptureInfo();
+      const rec = !!info.recording;
+
+      // ✅ Siempre visible; solo se habilita cuando estás grabando
+      btnPlay.disabled = !rec;
+      btnToggle.textContent = rec
+        ? "⏹️ Detener grabación IA"
+        : "▶️ Empezar grabación IA";
+
+      stateEl.textContent = rec
+        ? `IA: GRABANDO • buffer: ${info.buffered}`
+        : `IA: OFF`;
+    };
+
+    async function stopAndFlush() {
+      try {
+        const before = getAICaptureInfo();
+        stopAICapture();
+
+        const resp = await flushAICapture({ clearOnOk: true });
+
+        if (resp.ok) {
+          toast(`IA: ${resp.sent || before.buffered || 0} jugadas guardadas ✅`, 2000);
+        } else {
+          toast(`IA: no se pudo guardar ❌ (${resp.status})`, 2600);
+          console.warn("[AI-CAPTURE] flush fail:", resp);
+        }
+
+        refresh();
+      } catch (e) {
+        console.warn("[AI-CAPTURE] stopAndFlush error:", e);
+        toast("IA: error al guardar ❌", 2600);
       }
-
-      try { undo.save(); } catch {}
-      setBoardLocal(applied.board, "ai-play");
-      render();
-      paintState();
-
-      // Registrar experiencia SOLO si estamos grabando (que es cuando el botón se muestra)
-      if (isAICapturing()) {
-        recordAIMove({
-          fen: JSON.stringify(boardSnap),
-          side: sideBefore,
-          move: String(moveStr),
-          tag: "editor_ai_play",
-          meta: { applyMode: applied.mode || null },
-        });
-      }
-
-      // ✅ además: empujar al sistema de aprendizaje (logMoves.js) con tablero 10x10
-      emitLearningMoveFromEditor({
-        move: moveStr,
-        score: 0,
-        tag: "editor_ai_play_learning",
-      });
-
-
-      refresh();
-      toast("IA: jugada aplicada", 1400);
-    } catch (e) {
-      console.warn("[IA] playAIMove error:", e);
-      toast("IA: error ejecutando jugada", 2000);
     }
-  }
 
-  btnPlay.onclick = () => playAIMove();
+    btnToggle.onclick = async () => {
+      const info = getAICaptureInfo();
+      if (!info.recording) {
+        startAICapture();
+        toast("IA: grabación iniciada", 1600);
+        refresh();
+        return;
+      }
+      await stopAndFlush();
+    };
 
-  refresh();
-})();
+    async function playAIMove() {
+      try {
+        // ✅ IMPORTANTE: para que "aprendizaje por experiencia" coincida,
+        // mandamos SIEMPRE el tablero 10x10 (boardSnapshot) a pedirJugadaIA().
+        const boardSnap = boardRef.current;
+        const sideBefore = (turn === COLOR.ROJO) ? "R" : "N";
+
+        // ✅ KEY canónica local (misma que Python)
+        const k = boardToKeyCanonical(boardSnap, sideBefore);
+
+        // ✅ Debug opcional (si /ai/debug-key existe)
+        // (No rompe si no existe; solo log)
+        debugKeyOnBackend(boardSnap, sideBefore).then((dbg)=>{
+          if (dbg?.ok && dbg?.k && k && dbg.k !== k) {
+            console.warn("[AI-KEY MISMATCH] local != backend", { local: k, backend: dbg.k });
+          }
+        }).catch(()=>{});
+
+        const data = await pedirJugadaIA("", sideBefore, boardSnap);
+        const moveStr = data?.move || data?.jugada || data?.bestMove || null;
+        if (!moveStr) { toast("IA: no hay jugada", 2000); return; }
+
+        const coords = parseAlgebraToCoords(moveStr);
+        if (!coords) {
+          toast("IA: formato de jugada no reconocido", 2400);
+          console.warn("[IA] move recibido:", moveStr);
+          return;
+        }
+
+        const applied = applyMoveCompat(board, coords);
+        if (!applied.ok || !applied.board) {
+          toast("IA: no pude aplicar esa jugada (ver consola)", 2600);
+          console.warn("[IA] applyMoveCompat fallo:", applied, { moveStr, coords });
+          return;
+        }
+
+        try { undo.save(); } catch {}
+        setBoardLocal(applied.board, "ai-play");
+        render();
+        paintState();
+
+   // ❌ NO grabar IA en el dataset humano
+// if (isAICapturing()) { ... }
+
+        // ✅ además: empujar al sistema de aprendizaje (logMoves.js) con tablero 10x10 + k
+        emitLearningMoveFromEditor({
+          move: moveStr,
+          score: 0,
+          tag: "editor_ai_play_learning",
+          k: k || null,
+        });
+
+        refresh();
+        toast("IA: jugada aplicada", 1400);
+      } catch (e) {
+        console.warn("[IA] playAIMove error:", e);
+        toast("IA: error ejecutando jugada", 2000);
+      }
+    }
+
+    btnPlay.onclick = () => playAIMove();
+    refresh();
+  })();
 
   // Patch visual: panel izquierdo y tarjeta "Turno" transparentes
   (() => {

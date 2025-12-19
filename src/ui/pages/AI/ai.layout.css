@@ -1,0 +1,102 @@
+.ai-page{
+  padding: 16px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.ai-layout{
+  display: grid;
+  grid-template-columns: 240px minmax(320px, 1fr) 300px;
+  gap: 12px;
+  align-items: start;
+}
+
+.ai-center .card{
+  padding: 12px;
+  display: flex;
+  justify-content: center;
+}
+
+.ai-side{
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ai-panel{
+  padding: 10px;
+  border: 1px solid rgba(0,0,0,.12);
+  border-radius: 12px;
+  background: rgba(255,255,255,.55);
+  backdrop-filter: blur(6px);
+}
+
+.ai-panel h3{
+  margin: 0 0 8px 0;
+  font-size: 0.95rem;
+  opacity: .8;
+}
+
+.ai-btn-col{
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-btn-col .btn,
+.ai-btn-col .btn--subtle{
+  width: 100%;
+  justify-content: center;
+}
+
+.ai-info-stack{
+  display: grid;
+  gap: 8px;
+}
+
+.ai-coords-on .cell{
+  position: relative;
+}
+
+.ai-coords-on .alg-label{
+  position: absolute;
+  left: 4px;
+  top: 2px;
+  font-size: 0.58rem;
+  opacity: 0.55;
+  user-select: none;
+  pointer-events: none;
+}
+
+@media (max-width: 980px){
+  .ai-layout{
+    grid-template-columns: 1fr;
+  }
+  .ai-side{ order: 2; }
+  .ai-center{ order: 1; }
+}
+
+/* Coordenadas alfanuméricas en cada casilla */
+#board [data-r][data-c]{
+  position: relative;
+}
+
+#board .alg-label{
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  font-size: 10px;
+  line-height: 10px;
+  opacity: .55;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Responsive: en pantallas chicas, apila a columnas */
+@media (max-width: 900px){
+  .ai-layout{
+    grid-template-columns: 1fr;
+  }
+  .ai-side{ order: 2; }
+  .ai-center{ order: 1; }
+}
