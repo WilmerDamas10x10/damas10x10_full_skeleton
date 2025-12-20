@@ -1,6 +1,7 @@
 // src/ui/api/ia.api.js
-// Cliente del backend IA (FastAPI) usando PROXY de Vite (/ai/*)
-// - Evita mixed-content cuando el frontend está en https://localhost:5173
+// Cliente del backend IA (FastAPI)
+// - DEV (Vite): usa PROXY (/ai/*)
+// - PROD (Render): usa VITE_AI_API_BASE (https://tu-backend.onrender.com)
 // - NO lanza excepción en 422/400/500/etc: devuelve ok:false para fallback JS
 // - Incluye TIMEOUT para que nunca quede colgado
 // - ✅ MUESTRA el error real: intenta JSON y si no, lee texto (traceback)
@@ -19,7 +20,9 @@ function isDebugIA() {
 
 function dbg(...args) {
   if (!isDebugIA()) return;
-  try { console.log(...args); } catch {}
+  try {
+    console.log(...args);
+  } catch {}
 }
 
 /**
@@ -35,7 +38,10 @@ function cleanBoard10x10(board) {
     const outRow = [];
     for (let c = 0; c < 10; c++) {
       const cell = row[c];
-      if (cell === null || cell === undefined) { outRow.push(null); continue; }
+      if (cell === null || cell === undefined) {
+        outRow.push(null);
+        continue;
+      }
       if (typeof cell === "string") {
         const s = cell.trim();
         if (s === "r" || s === "n" || s === "R" || s === "N") outRow.push(s);
@@ -50,20 +56,28 @@ function cleanBoard10x10(board) {
 }
 
 function canonBoardJson(board10) {
-  try { return JSON.stringify(board10); } catch { return null; }
+  try {
+    return JSON.stringify(board10);
+  } catch {
+    return null;
+  }
 }
 
 function normalizeSide(sideToMove) {
-  const s = String(sideToMove || "R").trim().toUpperCase();
-  if (["R","ROJO","W","WHITE","BLANCO","BLANCAS"].includes(s)) return "R";
-  if (["N","NEGRO","B","BLACK","NEGRAS"].includes(s)) return "N";
+  const s = String(sideToMove || "R")
+    .trim()
+    .toUpperCase();
+  if (["R", "ROJO", "W", "WHITE", "BLANCO", "BLANCAS"].includes(s)) return "R";
+  if (["N", "NEGRO", "B", "BLACK", "NEGRAS"].includes(s)) return "N";
   return s.startsWith("R") ? "R" : "N";
 }
 
 function isAbortError(e) {
   try {
-    return e?.name === "AbortError" ||
-      String(e?.message || "").toLowerCase().includes("aborted");
+    return (
+      e?.name === "AbortError" ||
+      String(e?.message || "").toLowerCase().includes("aborted")
+    );
   } catch {
     return false;
   }
@@ -108,13 +122,52 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 12000) {
   }
 }
 
+/* ===========================
+   ✅ BASE URL: DEV vs PROD
+   - DEV: /ai/* (proxy Vite)
+   - PROD: VITE_AI_API_BASE (Render)
+   =========================== */
+
+function getEnvApiBase() {
+  // Vite inyecta import.meta.env.* en build
+  try {
+    const v = import.meta?.env?.VITE_AI_API_BASE;
+    if (typeof v === "string" && v.trim()) return v.trim();
+  } catch {}
+  return "";
+}
+
+function normalizeBaseUrl(base) {
+  // quita slash final
+  try {
+    return String(base || "")
+      .trim()
+      .replace(/\/+$/, "");
+  } catch {
+    return "";
+  }
+}
+
 /**
  * ✅ IMPORTANTE:
- * SIEMPRE usar el PROXY del frontend
- * ❌ NO usar http://127.0.0.1:8010 directamente
+ * - DEV: usa proxy /ai/*
+ * - PROD: usa VITE_AI_API_BASE si existe
+ *
+ * Ejemplo VITE_AI_API_BASE:
+ *   https://tu-backend.onrender.com
  */
 function apiUrl(path) {
-  return `/ai${path}`;
+  const p = String(path || "");
+  const apiBase =
+    normalizeBaseUrl(getEnvApiBase()) ||
+    normalizeBaseUrl(window?.__AI_API_BASE) ||
+    "";
+
+  // Si hay base (producción o configurado), pegar directo al backend
+  if (apiBase) return `${apiBase}/ai${p}`;
+
+  // Si no hay base, asumimos DEV con proxy
+  return `/ai${p}`;
 }
 
 export async function pedirJugadaIA(fen, sideToMove, boardSnapshot) {
@@ -145,7 +198,7 @@ export async function pedirJugadaIA(fen, sideToMove, boardSnapshot) {
       ok: false,
       move: "",
       reason: isAbortError(error) ? "timeout_abort" : "network_error",
-      meta: { error: String(error) }
+      meta: { error: String(error) },
     };
   }
 
@@ -154,7 +207,7 @@ export async function pedirJugadaIA(fen, sideToMove, boardSnapshot) {
       ok: false,
       move: "",
       reason: `http_${resp.status}`,
-      meta: { bodyText, raw: data }
+      meta: { bodyText, raw: data },
     };
   }
 
@@ -164,14 +217,11 @@ export async function pedirJugadaIA(fen, sideToMove, boardSnapshot) {
 export async function enviarLogIA(entries) {
   const list = Array.isArray(entries) ? entries : [entries];
 
-  const { resp, data, bodyText } = await fetchJsonWithTimeout(
-    apiUrl("/log-moves"),
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(list),
-    }
-  );
+  const { resp, data, bodyText } = await fetchJsonWithTimeout(apiUrl("/log-moves"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(list),
+  });
 
   if (!resp || !resp.ok) {
     return { ok: false, bodyText, raw: data };
@@ -181,10 +231,9 @@ export async function enviarLogIA(entries) {
 }
 
 export async function getIAStats() {
-  const { resp, data, bodyText } = await fetchJsonWithTimeout(
-    apiUrl("/log-stats"),
-    { method: "GET" }
-  );
+  const { resp, data, bodyText } = await fetchJsonWithTimeout(apiUrl("/log-stats"), {
+    method: "GET",
+  });
 
   if (!resp || !resp.ok) {
     return { ok: false, bodyText, raw: data };
@@ -195,7 +244,8 @@ export async function getIAStats() {
 
 /**
  * ✅ ENSEÑAR IA (POST /ai/teach)
- * - Usa el proxy /ai/*
+ * - DEV: proxy /ai/*
+ * - PROD: VITE_AI_API_BASE
  * - Timeout + lectura robusta de error (json/text)
  * - No lanza excepción: devuelve ok:false para fallback y debug
  *
@@ -207,7 +257,7 @@ export async function enseñarIA({ board, side, correct_move, note = "" }) {
   const board10 = cleanBoard10x10(board);
   const payload = {
     side: sideNorm,
-    side_to_move: sideNorm,   // compat, por si lo quieres usar en backend
+    side_to_move: sideNorm, // compat, por si lo quieres usar en backend
     board: board10,
     fen: board10 ? canonBoardJson(board10) : null, // compat/debug
     correct_move: String(correct_move || "").trim(),
@@ -222,14 +272,14 @@ export async function enseñarIA({ board, side, correct_move, note = "" }) {
     return {
       ok: false,
       reason: "invalid_board_client",
-      meta: { detail: "boardSnapshot no es 10x10 o contiene valores inválidos." }
+      meta: { detail: "boardSnapshot no es 10x10 o contiene valores inválidos." },
     };
   }
   if (!payload.correct_move) {
     return {
       ok: false,
       reason: "missing_correct_move_client",
-      meta: { detail: "Falta correct_move (ej: 'c3-d4')." }
+      meta: { detail: "Falta correct_move (ej: 'c3-d4')." },
     };
   }
 
@@ -246,7 +296,7 @@ export async function enseñarIA({ board, side, correct_move, note = "" }) {
     return {
       ok: false,
       reason: isAbortError(error) ? "timeout_abort" : "network_error",
-      meta: { error: String(error) }
+      meta: { error: String(error) },
     };
   }
 
@@ -254,7 +304,7 @@ export async function enseñarIA({ board, side, correct_move, note = "" }) {
     return {
       ok: false,
       reason: `http_${resp.status}`,
-      meta: { bodyText, raw: data }
+      meta: { bodyText, raw: data },
     };
   }
 
@@ -263,7 +313,7 @@ export async function enseñarIA({ board, side, correct_move, note = "" }) {
     return {
       ok: false,
       reason: data.reason || "teach_failed",
-      meta: { raw: data, bodyText }
+      meta: { raw: data, bodyText },
     };
   }
 
